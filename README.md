@@ -323,3 +323,30 @@ Running evaluation requires two terminal windows: one to launch the models for t
    ```bash
    export CSV_PATH={path to logging directory}/eval_stats.csv
    ```
+
+## Citation
+
+If you use this work, please cite our paper:
+
+```bibtex
+@misc{scicluna2026roommediatedcooccurrencezeroshotobjectcentric,
+      title={Room-Mediated Co-occurrence for Zero-Shot Object-Centric Semantic Navigation via Frontier Scoring}, 
+      author={Adam Scicluna and Gavin Paul and Alen Alempijevic},
+      year={2026},
+      eprint={2607.25448},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2607.25448}, 
+}
+```
+
+This work builds upon prior work, which should also be cited if this work is used in any way:
+
+```bibtex
+@inproceedings{yokoyama2024vlfm,
+  title={VLFM: Vision-Language Frontier Maps for Zero-Shot Semantic Navigation},
+  author={Naoki Yokoyama and Sehoon Ha and Dhruv Batra and Jiuguang Wang and Bernadette Bucher},
+  booktitle={International Conference on Robotics and Automation (ICRA)},
+  year={2024},
+}
+```

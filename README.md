@@ -1,12 +1,24 @@
-RPV-SemNav
+<h1 align="center">RPV-SemNav</h1>
 
-Official repo for the paper "Room-Mediated Co-occurrence for Object-Centric Zero-Shot Semantic Navigation via Frontier Scoring", accepted to IROS 2026
+<p align="center">
+  <a href="https://uts-ri.github.io/RPV-SemNav/">
+    <img src="assets/header.png" width="90%"
+         alt="Target: toilet. A detected mirror indicates the toilet is nearby. The room is searched and the toilet is found.">
+  </a>
+</p>
 
-TO DO:
-- Add V1 code
-- Clean-up unused files
+<h2 align="center">Room-Mediated Co-occurrence for Zero-Shot Object-Centric Semantic Navigation via Frontier Scoring</h2>
 
-## Installation
+<p align="center">
+  Adam Scicluna, Gavin Paul, Alen Alempijevic<br>
+  University of Technology Sydney, Robotics Institute<br>
+  <b>IROS 2026</b>
+</p>
+
+<p align="center">
+  <a href="https://uts-ri.github.io/RPV-SemNav/">Project Page</a> |
+  <a href="https://arxiv.org/abs/2607.25448">arXiv</a>
+</p>
 
 **This has been tested on Ubuntu 22.04 & 24.04**
 
@@ -324,9 +336,14 @@ Running evaluation requires two terminal windows: one to launch the models for t
    export CSV_PATH={path to logging directory}/eval_stats.csv
    ```
 
+## To Do
+
+- [ ] Upload V1 code
+- [ ] Upload steps to download model checkpoints
+
 ## Citation
 
-If you use this work, please cite our paper:
+If you find this work useful, please cite our paper:
 
 ```bibtex
 @misc{scicluna2026roommediatedcooccurrencezeroshotobjectcentric,
@@ -340,7 +357,7 @@ If you use this work, please cite our paper:
 }
 ```
 
-This work builds upon prior work, which should also be cited if this work is used in any way:
+This work builds upon VLFM, which should also be cited if this work is used in any way:
 
 ```bibtex
 @inproceedings{yokoyama2024vlfm,

@@ -23,6 +23,19 @@
   <link rel="stylesheet" href="./static/css/centre-container.css">
   <link rel="stylesheet" href="./static/css/line-spacing-tree.css">
 
+
+  <style>
+    .figure-block { margin: 0 auto; text-align: center; }
+    .figure-block img { width: 100%; height: auto; display: block; margin: 0 auto; }
+    .figure-block video { width: 100%; height: auto; display: block; margin: 0 auto; }
+    .figure-caption { margin-top: 0.75rem; font-size: 0.95rem; color: #4a4a4a; text-align: center; }
+    .figure-caption b { color: #363636; }
+    .stage-title { font-weight: 600; margin-bottom: 0.25rem; }
+    .bibtex-wrap { position: relative; }
+    .bibtex-copy { position: absolute; top: 0.5rem; right: 0.5rem; }
+    .section-tight { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+  </style>
+
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
   <script defer src="./static/js/fontawesome.all.min.js"></script>
   <script src="./static/js/bulma-carousel.min.js"></script>
@@ -106,8 +119,9 @@
                   <span>Paper</span>
                 </a>
               </span>
+              <!-- arXiv Link. -->
               <span class="link-block">
-                <a href="https://arxiv.org/abs/2607.25448"
+                <a href="https://arxiv.org/abs/2607.25448" target="_blank" rel="noopener"
                    class="external-link button is-normal is-rounded is-dark">
                   <span class="icon">
                       <i class="ai ai-arxiv"></i>
@@ -118,7 +132,7 @@
               <!-- Video Link. -->
               <!--
               <span class="link-block">
-                <a href="https://www.youtube.com/watch?v=MrKrnHhk8IA"
+                <a href="<video_link"
                    class="external-link button is-normal is-rounded is-dark">
                   <span class="icon">
                       <i class="fab fa-youtube"></i>
@@ -129,7 +143,7 @@
               -->
               <!-- Code Link. -->
               <span class="link-block">
-                <a href="https://github.com/UTS-RI/RPV-SemNav"
+                <a href="https://github.com/UTS-RI/RPV-SemNav" target="_blank" rel="noopener"
                    class="external-link button is-normal is-rounded is-dark">
                   <span class="icon">
                       <i class="fab fa-github"></i>
@@ -137,20 +151,7 @@
                   <span>Code</span>
                   </a>
               </span>
-              
-              
-              <!-- Dataset Link. -->
-              <!--
-              <span class="link-block">
-                <a href="https://drive.google.com/drive/folders/1E98yzxjnRoS2HcutR3BNrYvAW0l2k5x1"
-                   class="external-link button is-normal is-rounded is-dark">
-                  <span class="icon">
-                      <i class="far fa-images"></i>
-                  </span>
-                  <span>Data</span>
-                  </a>
-               </span>
-               -->
+            
             </div>
 
           </div>
@@ -160,429 +161,173 @@
   </div>
 </section>
 
-<!-- Video Only
-<section class="hero teaser">
+<!-- Teaser: three-frame overview -->
+<section class="section section-tight">
   <div class="container is-max-desktop">
-    <div class="hero-body">
-      <video id="teaser" autoplay muted loop playsinline height="100%">
-        <source src="./static/videos/Event-Video-Sample_Conf=0.5_Speed=0.35x.mp4"
-                type="video/mp4">
+    <div class="figure-block">
+      <img src="./static/images/method_3_frames_episode80.png"
+           alt="Three frames from one episode. Target: toilet. A detected mirror indicates the toilet is nearby. The room is searched and the toilet is found.">
+      <p class="figure-caption">
+        <b>Key idea.</b> Objects the agent can already see (here, a mirror) act as cues for where an unseen target (a toilet) is likely to be,
+        so the agent searches the promising room first.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- Walkthrough video -->
+<section class="section section-tight">
+  <div class="container is-max-desktop">
+    <div class="figure-block">
+      <video id="teaser" autoplay muted loop playsinline controls>
+        <source src="./static/videos/iros_sample_walkthough_quicker.mp4" type="video/mp4">
+        Your browser does not support the video tag.
       </video>
-      <h2 class="subtitle has-text-centered">
-        Pedestrian tracking and localisation on REveL event camera and LiDAR data utilising RVTs and SORT
-      </h2>
-    </div>
-  </div>
-</section>
--->
-
-<!-- Video and Sensor Suite Image -->
-<section class="hero teaser">
-  <div class="container is-max-desktop">
-    <div class="hero-body">
-      <div class="columns is-vcentered">
-        <!-- Video Column -->
-        <div class="column is-6 has-text-centered">
-          <div class="media-container">
-            <video id="teaser" autoplay muted loop playsinline height="100%">
-              <source src="./static/videos/iros_sample_walkthough_quicker.mp4" type="video/mp4">
-              Your browser does not support the video tag.
-            </video>
-          </div>
-          <div class="media-text">
-            <h2 class="subtitle">Walkthrough of an example episode in the Habitat simulator. Agent is tasked with finding a bed in an unseen scene.</h2>
-          </div>
-        </div>
-        
-        <!-- Image Column -->
-        <div class="column is-6 has-text-centered">
-          <div class="media-container">
-            <img src="./static/images/illustration.png" 
-                 alt="Sensor suite" class="media-content">
-          </div>
-          <div class="media-text">
-            <h2 class="subtitle">Graphical overview of our proposed framework. Objects visible to the agent with a high spatial relationship to the target emit stronger signals. (Figure partially generated using Nano Banana 2).</h2>
-          </div>
-        </div>
-      </div>
+      <p class="figure-caption">
+        Walkthrough of an example episode in the Habitat simulator. The agent is tasked with finding a bed in an unseen scene.
+      </p>
     </div>
   </div>
 </section>
 
-
-<!--
-<section class="hero is-light is-small">
-  <div class="hero-body">
-    <div class="container">
-      <div id="results-carousel" class="carousel results-carousel">
-        <div class="item item-steve">
-          <video poster="" id="steve" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/steve.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-chair-tp">
-          <video poster="" id="chair-tp" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/chair-tp.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-shiba">
-          <video poster="" id="shiba" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/shiba.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-fullbody">
-          <video poster="" id="fullbody" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/fullbody.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-blueshirt">
-          <video poster="" id="blueshirt" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/blueshirt.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-mask">
-          <video poster="" id="mask" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/mask.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-coffee">
-          <video poster="" id="coffee" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/coffee.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-toby">
-          <video poster="" id="toby" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/toby2.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
--->
-
-
+<!-- Abstract -->
 <section class="section">
   <div class="container is-max-desktop">
-    <!-- Abstract. -->
     <div class="columns is-centered has-text-centered">
       <div class="column is-four-fifths">
         <h2 class="title is-3">Abstract</h2>
         <div class="content has-text-justified">
           <p>
-          Zero-shot ObjectNav methods increasingly use vision-language priors, but direct object-object similarity in the latent space is often a weak proxy for spatial co-occurrence. We present an analytical, training-free semantic navigation pipeline that mediates object relationships through a compact room lexicon. Each object label is mapped to a CLIP-derived <b>Room Probability Vector (RPV)</b>, and object-target co-occurrence is computed from RPV distribution overlap. These scores are projected onto a value map using geodesic flood-fill propagation (Fast Marching Method), with adaptive signal decay, and are used to rank frontiers by semantic score for navigation. 
+          Zero-shot ObjectNav methods increasingly use vision-language priors, but direct object-object similarity in the latent space is often a weak proxy for spatial co-occurrence. We present an analytical, training-free semantic navigation pipeline that mediates object relationships through a compact room lexicon. Each object label is mapped to a CLIP-derived <b>Room Probability Vector (RPV)</b>, and object-target co-occurrence is computed from RPV distribution overlap. These scores are projected onto a value map using geodesic flood-fill propagation (Fast Marching Method), with adaptive signal decay, and are used to rank frontiers by semantic score for navigation.
           </p>
           <p>
-          Together, these components form an integrated, training‑free, object‑centric pipeline for open‑vocabulary zero‑shot navigation. Results show that our object-centric approach improves Success Rate (SR) and Success by weighted inverse Path Length (SPL) by a relative <b>3%</b> and <b>1.3%</b>, respectively, compared to image-holistic baselines on the HM3D dataset validation split, while preserving interpretability and open-vocabulary flexibility.
+          Together, these components form an integrated, training&#8209;free, object&#8209;centric pipeline for open&#8209;vocabulary zero&#8209;shot navigation. Results show that our object-centric approach improves Success Rate (SR) and Success by weighted inverse Path Length (SPL) by a relative <b>3%</b> and <b>1.3%</b>, respectively, compared to image-holistic baselines on the HM3D dataset validation split, while preserving interpretability and open-vocabulary flexibility.
           </p>
         </div>
       </div>
     </div>
-    <!--/ Abstract. -->
-
-    <!-- Paper video. -->
-    <!--
-    <div class="columns is-centered has-text-centered">
-      <div class="column is-four-fifths">
-        <h2 class="title is-3">Video</h2>
-        <div class="publication-video">
-          <iframe src="https://www.youtube.com/embed/MrKrnHhk8IA?rel=0&amp;showinfo=0"
-                  frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
-        </div>
-      </div>
-    </div>
-    -->
-    <!--/ Paper video. -->
   </div>
 </section>
 
-
-<section class="section">
+<!-- Method -->
+<section class="section" id="method">
   <div class="container is-max-desktop">
-    <!-- Dataset Information -->
-    <div class="columns is-centered">
-      <!-- Left Column: Dataset Information -->
-      <!--
-      <div class="column is-three-thirds">
-        <h2 class="title is-3" style="text-align: center;">Dataset Information</h2>
-        <div class="content has-text-justified">
-          <p>
-            To collect the RGB, event, and point cloud data, the sensor suite utilised consisted of:
-          </p>
-          <ul>
-            <li><b>Inivation DAVIS346 event camera:</b> Stream of event data (up to 1MHz) with each event being a tuple of x and y positions in the image space, t the timestamp, and p the polarity of the corresponding illumination change; RGB images at 23Hz; 6-DoF IMU at 1kHz (3-axis gyroscope and 3-axis accelerometer).
-            </li>
-            <li><b>Blickfeld Cube1 LiDAR:</b> 3D point clouds at 7.9Hz with point-wise timestamps.
-            </li>
-          </ul>
-          <p>
-            The sensor’s measurements and output of the motion-capture system were recorded with ROS. We use the rpg dvs ros driver for the DVS camera and the Blickfeld ROS driver for the LiDAR. The sensor suite and helmets worn by persons in the scene were equipped with a set of reflective markers tracked by the Vicon system, subsequently providing the 6-DoF pose of the 2 persons and sensor suite in an arbitrarily fixed reference frame. For convenience and utility, the RGB portion of the dataset is labelled with the class identifier corresponding to the colour helmet worn by each person. In total, the data collected consisted of approximately:
-          </p>
-          <ul>
-            <li>774 million events (~25000 variable length event-array messages)</li>
-            <li>22000 RGB images</li>
-            <li>6700 point clouds</li>
-            <li>70000 ground truth poses each for two persons in the scene</li>
-          </ul>
-        </div>
-      </div>
-      -->
+    <h2 class="title is-3 has-text-centered">Method</h2>
 
-      <!-- Right Column: Tree Structure -->
-      <!--
-      <div class="column is-two-fifths">
-        <h2 class="title is-3" style="text-align: center;">Dataset Structure</h2>
-        <ul class="tree">
-          <li>REveL/
-            <ul>
-              <li><b>session_1/</b>
-                <ul>
-                  <li><b>calibration_data/</b>
-                    <ul>
-                      <li>cam_lidar_calib.bag</li>
-                      <li>vicon_cam_calib.bag</li>
-                      <li>INFO.txt</li>
-                    </ul>
-                  </li>
-                  <li><b>dynamic/</b>
-                    <ul>
-                      <li>images.zip
-                      </li>
-                      <li>labels.zip
-                      </li>
-                      <li>classes.txt</li>
-                      <li>notes.json</li>
-                      <li>dynamic.bag</li>
-                    </ul>
-                  </li>
-                  <li>calibration.yaml</li>
-                </ul>
-              </li>
-                      
-              <li><b>session_2/</b>
-                <ul>
-                  <li><b>calibration_data/</b>
-                    <ul>
-                      <li>...</li>
-                    </ul>
-                  </li>
-                  <li><b>dog_like/</b>
-                    <ul>
-                      <li>...</li>
-                      <li>dog_like.bag</li>
-                    </ul>
-                  </li>
-                  <li><b>non_square/</b>
-                    <ul>
-                      <li>...</li>
-                      <li>non_square.bag</li>
-                    </ul>
-                  </li>
-                  <li><b>static/</b>
-                    <ul>
-                      <li>...</li>
-                      <li>static.bag</li>
-                    </ul>
-                    </li>
-                  <li>calibration.yaml</li>
-                </ul>
-              </li>
-              <li>INFO.txt</li>
-            </ul>
-          </li>
-        </ul>
+    <div class="figure-block">
+      <a href="./static/images/pipeline_poster.webp" target="_blank" rel="noopener" title="Open full-size figure">
+        <img src="./static/images/pipeline_poster.webp"
+             alt="Pipeline overview: Stage 1 perception, Stage 2 RPV scoring, Stage 3 occupancy and semantic value mapping, Stage 4 frontier navigation."
+             loading="lazy" decoding="async">
+      </a>
+      <p class="figure-caption">Overview of the four-stage pipeline (click to enlarge).</p>
+    </div>
+
+    <div class="columns mt-5">
+      <div class="column is-3">
+        <p class="stage-title">1. Perception</p>
+        <p>Object labels and positions are obtained from RGB-D observations.</p>
       </div>
-      -->
+      <div class="column is-3">
+        <p class="stage-title">2. RPV scoring</p>
+        <p>Each label is mapped to a CLIP-derived distribution over a compact room lexicon. Co-occurrence with the target is the overlap of the two distributions.</p>
+      </div>
+      <div class="column is-3">
+        <p class="stage-title">3. Value mapping</p>
+        <p>Scores are projected onto the occupancy map using geodesic propagation (Fast Marching Method) with adaptive signal decay.</p>
+      </div>
+      <div class="column is-3">
+        <p class="stage-title">4. Frontier navigation</p>
+        <p>Frontiers are ranked by semantic score, and the agent navigates to the best one until the target is found.</p>
+      </div>
     </div>
   </div>
 </section>
 
-
-
-<section class="section">
+<!-- Results -->
+<section class="section" id="results">
   <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Results</h2>
 
-    <div class="columns is-centered">
-
-      <!-- Visual Effects. -->
-      <!--
-      <div class="column">
-        <div class="content">
-          <h2 class="title is-3">Visual Effects</h2>
-          <p>
-            Using <i>nerfies</i> you can create fun visual effects. This Dolly zoom effect
-            would be impossible without nerfies since it would require going through a wall.
+    <!-- Qualitative example -->
+    <h3 class="title is-4">Qualitative example</h3>
+    <div class="columns is-vcentered">
+      <div class="column is-6">
+        <div class="figure-block">
+          <img src="./static/images/5cdEh9F2hJL_topdown_transparent.webp"
+               alt="Top-down view of an HM3D scene mesh." loading="lazy" decoding="async">
+          <p class="figure-caption">Top-down view of an HM3D scene.</p>
+        </div>
+      </div>
+      <div class="column is-6">
+        <div class="figure-block">
+          <img src="./static/images/navmesh_clean.png"
+               alt="Navigable-area map showing the shortest path in green, the agent's path in blue, and bed regions in pink."
+               loading="lazy" decoding="async">
+          <p class="figure-caption">
+            Episode with target &ldquo;bed&rdquo;. The agent&rsquo;s path (blue) is longer than the shortest path (green) that SPL is measured against.
           </p>
-          <video id="dollyzoom" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/dollyzoom-stacked.mp4"
-                    type="video/mp4">
-          </video>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quantitative results -->
+    <h3 class="title is-4 mt-6">Quantitative results</h3>
+    <div class="columns is-centered is-vcentered">
+      <div class="column is-7">
+        <div class="figure-block">
+          <img src="./static/images/clean_poster_results_table.png"
+               alt="Results table on HM3D ObjectNav validation comparing trained and training-free methods by SR, SPL and DTG."
+               loading="lazy" decoding="async">
+          <p class="figure-caption">
+            HM3D ObjectNav validation split. SR: success rate. SPL: success weighted by inverse path length. DTG: distance to goal.
+            RPV-V1 and RPV-V2 are variants of our method. RPV-V2 has the highest SPL of all methods, and the best SR and DTG among training-free methods.
+          </p>
+        </div>
+      </div>
+
+      <!-- TODO: retrieval metrics (NDCG@5, Recall@5). Add the image to ./static/images, fix the filename, then uncomment. -->
+      <!--
+      <div class="column is-5">
+        <div class="figure-block">
+          <img src="./static/images/RETRIEVAL_METRICS.png" alt="NDCG@5 and Recall@5 for room co-occurrence scoring." loading="lazy" decoding="async">
+          <p class="figure-caption">Co-occurrence quality (NDCG@5, Recall@5). One sentence on what this measures.</p>
         </div>
       </div>
       -->
-      <!--/ Visual Effects. -->
-
-      <!-- Matting. -->
-      <!--
-      <div class="column">
-        <h2 class="title is-3">Matting</h2>
-        <div class="columns is-centered">
-          <div class="column content">
-            <p>
-              As a byproduct of our method, we can also solve the matting problem by ignoring
-              samples that fall outside of a bounding box during rendering.
-            </p>
-            <video id="matting-video" controls playsinline height="100%">
-              <source src="./static/videos/matting.mp4"
-                      type="video/mp4">
-            </video>
-          </div>
-        </div>
-      </div>
-      -->
     </div>
-    <!--/ Matting. -->
-
-    <!-- Animation. -->
-    <div class="columns is-centered">
-      <div class="column is-full-width">
-        <h2 class="title is-3">Experimentation</h2>
-
-        <!-- Interpolating. -->
-        <!--
-        <h3 class="title is-4">Interpolating states</h3>
-        <div class="content has-text-justified">
-          <p>
-            We can also animate the scene by interpolating the deformation latent codes of two input
-            frames. Use the slider here to linearly interpolate between the left frame and the right
-            frame.
-          </p>
-        </div>
-        <div class="columns is-vcentered interpolation-panel">
-          <div class="column is-3 has-text-centered">
-            <img src="./static/images/interpolate_start.jpg"
-                 class="interpolation-image"
-                 alt="Interpolate start reference image."/>
-            <p>Start Frame</p>
-          </div>
-          <div class="column interpolation-video-column">
-            <div id="interpolation-image-wrapper">
-              Loading...
-            </div>
-            <input class="slider is-fullwidth is-large is-info"
-                   id="interpolation-slider"
-                   step="1" min="0" max="100" value="0" type="range">
-          </div>
-          <div class="column is-3 has-text-centered">
-            <img src="./static/images/interpolate_end.jpg"
-                 class="interpolation-image"
-                 alt="Interpolation end reference image."/>
-            <p class="is-bold">End Frame</p>
-          </div>
-        </div>
-        <br/>
-        -->
-        <!--/ Interpolating. -->
-        
-        <!-- Comparison. -->
-        <!--
-        <h3 class="title is-4">Comparison of Event and RGB Detection</h3>
-        <div class="content has-text-justified">
-          <p>
-            We compared the reliability of pedestrian detection in the Event space with detection in the RGB space using YOLOv4.
-          </p>
-        </div>
-        <div class="columns is-vcentered interpolation-panel">
-          <div class="column is-6 has-text-centered">
-            <img src="./static/images/1090-Event_-EntireImage-No-Vel-Larger.jpg"
-                  class="interpolation-image"
-                  alt="Interpolation end reference image."/>
-            <p class="is-bold">Event space</p>
-          </div>
-          <div class="column is-6 has-text-centered">
-            <img src="./static/images/1090-RGB_EntireImage-No-Vel-Larger.jpg"
-                  class="interpolation-image"
-                  alt="Interpolation end reference image."/>
-            <p class="is-bold">RGB space</p>
-          </div>
-        </div>
-        <br/>
-        -->
-        <!--/ Comparison. -->
-
-        <!-- Vicon Localisation -->
-        <!--
-        <h3 class="title is-4">Pose Localisation with Motion Capture</h3>
-        <div class="content has-text-justified">
-          <p>
-            Using the Vicon motion capture system, the poses of two persons in the scene are obtained to be used as a groundtruth for localisation. The below video shows a played back section of 'dynamic.bag' in RViz with the acquired poses overlaid on the LiDAR pointcloud data. Note that when the Vicon system can not accurately track the location of a person, the pose defaults to the origin.
-          </p>
-        </div>
-        <div class="content has-text-centered">
-          <video id="lidar-pose-video"
-                 controls
-                 muted
-                 preload
-                 playsinline
-                 width="100%">
-            <source src="./static/videos/Dynamic_LiDAR-Trimmed.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        -->
-        <!--/ Re-rendering. -->
-
-      </div>
-    </div>
-    <!--/ Animation. -->
-
-
-    <!-- Concurrent Work. -->
-    <!--
-    <div class="columns is-centered">
-      <div class="column is-full-width">
-        <h2 class="title is-3">Related Links</h2>
-
-        <div class="content has-text-justified">
-          <p>
-            There's a lot of excellent work that was introduced around the same time as ours.
-          </p>
-          <p>
-            <a href="https://arxiv.org/abs/2104.09125">Progressive Encoding for Neural Optimization</a> introduces an idea similar to our windowed position encoding for coarse-to-fine optimization.
-          </p>
-          <p>
-            <a href="https://www.albertpumarola.com/research/D-NeRF/index.html">D-NeRF</a> and <a href="https://gvv.mpi-inf.mpg.de/projects/nonrigid_nerf/">NR-NeRF</a>
-            both use deformation fields to model non-rigid scenes.
-          </p>
-          <p>
-            Some works model videos with a NeRF by directly modulating the density, such as <a href="https://video-nerf.github.io/">Video-NeRF</a>, <a href="https://www.cs.cornell.edu/~zl548/NSFF/">NSFF</a>, and <a href="https://neural-3d-video.github.io/">DyNeRF</a>
-          </p>
-          <p>
-            There are probably many more by the time you are reading this. Check out <a href="https://dellaert.github.io/NeRF/">Frank Dellart's survey on recent NeRF papers</a>, and <a href="https://github.com/yenchenlin/awesome-NeRF">Yen-Chen Lin's curated list of NeRF papers</a>.
-          </p>
-        </div>
-      </div>
-    </div>
-    -->
-    <!--/ Concurrent Work. -->
-
   </div>
 </section>
+
+<!-- TODO: real-robot demo. Add the video to ./static/videos, fix the filename, then uncomment. -->
+<!--
+<section class="section" id="real-robot">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Real-robot demo</h2>
+    <div class="figure-block">
+      <video controls muted loop playsinline preload="metadata">
+        <source src="./static/videos/SPOT_DEMO.mp4" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>
+      <p class="figure-caption">
+        Qualitative deployment on a Boston Dynamics Spot. This demo is not part of the paper&rsquo;s evaluation.
+      </p>
+    </div>
+  </div>
+</section>
+-->
 
 
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
     <h2 class="title">BibTeX</h2>
     <p>If you use this work in your research, please cite it as:</p>
-    <pre><code>@misc{scicluna2026roommediatedcooccurrencezeroshotobjectcentric,
+    <div class="bibtex-wrap">
+      <button class="button is-small is-light bibtex-copy" id="bibtex-copy" type="button">
+        <span class="icon"><i class="fas fa-copy"></i></span>
+        <span id="bibtex-copy-label">Copy</span>
+      </button>
+      <pre><code id="bibtex-code">@misc{scicluna2026roommediatedcooccurrencezeroshotobjectcentric,
       title={Room-Mediated Co-occurrence for Zero-Shot Object-Centric Semantic Navigation via Frontier Scoring}, 
       author={Adam Scicluna and Gavin Paul and Alen Alempijevic},
       year={2026},
@@ -591,6 +336,7 @@
       primaryClass={cs.RO},
       url={https://arxiv.org/abs/2607.25448}, 
 }</code></pre>
+    </div>
   </div>
 </section>
 
@@ -613,6 +359,29 @@
     </div>
   </div>
 </footer>
+
+<script>
+  (function () {
+    var btn = document.getElementById('bibtex-copy');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var text = document.getElementById('bibtex-code').innerText;
+      var label = document.getElementById('bibtex-copy-label');
+      function done(ok) {
+        label.textContent = ok ? 'Copied!' : 'Press Ctrl+C';
+        setTimeout(function () { label.textContent = 'Copy'; }, 2000);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { done(document.execCommand('copy')); } catch (e) { done(false); }
+        document.body.removeChild(ta);
+      }
+    });
+  })();
+</script>
 
 </body>
 </html>

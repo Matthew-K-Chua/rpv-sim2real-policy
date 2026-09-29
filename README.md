@@ -38,7 +38,7 @@
    
    Inside the "env_installation_files" directory:
    ```bash
-   conda env create -f environment-rpv.yml
+   conda env create -f env_installation_files/environment-rpv.yml
    ```
    This creates an environment named `rpv`.
 
@@ -49,7 +49,7 @@
 
 4. **Install base Python packages**
    ```bash
-   pip install -r requirements-rpv.txt
+   pip install -r env_installation_files/requirements-rpv.txt
    ```
 
 5. **Clone habitat-sim v0.3.3 into the project root directory**
@@ -82,7 +82,7 @@
    Inside `habitat-sim`, install with the desired configuration environment variables. We used a headless system with CUDA, and turned bullet physics on:
    ```bash
    HABITAT_BUILD_GUI_VIEWERS=OFF HABITAT_WITH_CUDA=ON HABITAT_WITH_BULLET=ON \
-     pip install . --no-build-isolation -c <path to requirements-new.txt from step 4>
+     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4>
    ```
 
 7. **Verify the habitat-sim installation**
@@ -100,7 +100,7 @@
 
 8. **Install compatible habitat-lab and habitat-baselines versions with habitat-sim**
    ```bash
-   pip install -r requirements-habitat.txt -c requirements-new.txt
+   pip install -r env_installation_files/requirements-habitat.txt -c requirements-rpv.txt
    ```
 
 9. **Fix syntax errors in habitat-lab/habitat-baselines with Python 3.12**
@@ -116,7 +116,7 @@
 
     From the project root folder:
     ```bash
-    pip install -e ./frontier_exploration_src -e ./vlfm -c <path to requirements-new.txt>
+    pip install -e ./frontier_exploration_src -e ./vlfm -c <path to requirements-rpv.txt>
     ```
 
 11. **Install detectron2**
@@ -138,7 +138,7 @@
     ```bash
     git clone https://github.com/facebookresearch/Mask2Former.git
     cd Mask2Former
-    pip install -r requirements.txt -c <path to requirements-new.txt>
+    pip install -r requirements.txt -c <path to requirements-rpv.txt>
     cd mask2former/modeling/pixel_decoder/ops
     ```
 
@@ -203,7 +203,7 @@ If CUDA compatibility returns `False` after building habitat-sim, force a clean 
    HABITAT_BUILD_GUI_VIEWERS=OFF \
    HABITAT_WITH_CUDA=ON \
    HABITAT_WITH_BULLET=ON \
-     pip install . --no-build-isolation -c <path to requirements-new.txt from step 4> -v
+     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4> -v
    ```
 
    OR, using the legacy (v0.3.3) env var names directly:
@@ -211,7 +211,7 @@ If CUDA compatibility returns `False` after building habitat-sim, force a clean 
    HEADLESS=True \
    WITH_CUDA=True \
    WITH_BULLET=True \
-     pip install . --no-build-isolation -c <path to requirements-new.txt from step 4> -v
+     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4> -v
    ```
 
    **Note:** The official `BUILD_FROM_SOURCE.md` on habitat-sim's `main` branch documents the `HABITAT_WITH_CUDA` / `HABITAT_BUILD_GUI_VIEWERS` env vars for a newer scikit-build-core-based build system. `v0.3.3` predates that migration and uses a legacy `setup.py` that reads different, unprefixed variable names: `WITH_CUDA`, `HEADLESS`, `WITH_BULLET`. Using `main`'s documented variable names against this tag will silently build **without** CUDA — pip reports success either way, since the wrong env var name is just ignored, not rejected. This is the most common cause of step 7 failing.
@@ -222,7 +222,7 @@ If CUDA compatibility returns `False` after building habitat-sim, force a clean 
    git clone --branch v0.3.3 https://github.com/facebookresearch/habitat-sim.git
    cd habitat-sim
    HEADLESS=True WITH_CUDA=True WITH_BULLET=True \
-     pip install . --no-build-isolation -c <path to requirements-new.txt from step 4> -v
+     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4> -v
    ```
 
 ## Dataset Download

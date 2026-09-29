@@ -28,7 +28,7 @@
     .figure-block { margin: 0 auto; text-align: center; }
     .figure-block img { width: 100%; height: auto; display: block; margin: 0 auto; }
     .figure-block video { width: 100%; height: auto; display: block; margin: 0 auto; }
-    .figure-caption { margin-top: 0.75rem; font-size: 0.95rem; color: #4a4a4a; text-align: center; }
+    .figure-caption { margin-top: 0.75rem; font-size: 1.15rem; color: #4a4a4a; text-align: center; }
     .figure-caption b { color: #363636; }
     .stage-title { font-weight: 600; margin-bottom: 0.25rem; }
     .bibtex-wrap { position: relative; }
@@ -220,26 +220,26 @@
              alt="Pipeline overview: Stage 1 perception, Stage 2 RPV scoring, Stage 3 occupancy and semantic value mapping, Stage 4 frontier navigation."
              loading="lazy" decoding="async">
       </a>
-      <p class="figure-caption">Overview of the four-stage pipeline (click to enlarge).</p>
+      <p class="figure-caption">Overview of the four-stage pipeline.</p>
     </div>
 
     <div class="columns mt-5">
       <div class="column is-3">
         <p class="stage-title">1. Perception</p>
         <div class="content has-text-justified">
-          <p>After a preprocessing step to blur out uninformative regions in the image (e.g. walls, ceilings, floors, etc), YOLOE on the LVIS dataset proposes semantic labels for SAM3 to segment.</p>
+          <p>Object labels and positions are obtained from RGB-D observations. After a preprocessing step to blur out uninformative regions in the RGB image (e.g. walls, ceilings, floors, etc), YOLOE on the LVIS dataset proposes semantic labels for SAM3 to segment.</p>
         </div>
       </div>
       <div class="column is-3">
         <p class="stage-title">2. RPV Scoring</p>
         <div class="content has-text-justified">
-          <p>Each label is mapped to a CLIP-derived distribution over a compact room lexicon. Co-occurrence with the target (likelihood of A implying B) is the overlap of the two distributions.</p>
+          <p>Each label is mapped to a CLIP-derived discrete probability distribution over a compact room lexicon (Room Probability Vector; RPV). Co-occurrence estimation with the target (likelihood of detection existence implying target existence) is the overlap of the two distributions.</p>
         </div>
       </div>
       <div class="column is-3">
         <p class="stage-title">3. Value Mapping</p>
         <div class="content has-text-justified">
-          <p>Scores are projected onto the occupancy map using geodesic propagation (Fast Marching Method) with adaptive signal decay.</p>
+          <p>Scores are projected onto the free space occupancy map using geodesic flood-fill propagation (Fast Marching Method) with adaptive signal decay, such that objects with higher scores have a greater influence.</p>
         </div>
       </div>
       <div class="column is-3">
@@ -272,11 +272,9 @@
           <img src="./static/images/navmesh_clean.png"
                alt="Navigable-area map showing the shortest path in green, the agent's path in blue, and bed regions in pink."
                loading="lazy" decoding="async">
-          <div class="content has-text-justified">
-            <p class="figure-caption">
-              Episode with target &ldquo;bed&rdquo;. The agent&rsquo;s path (blue) is longer than the shortest path (green) that SPL is measured against. Light grey indicates explored space. Dark grey indicates unknown space.
-            </p>
-          </div>
+          <p class="figure-caption">
+            Episode with target &ldquo;bed&rdquo;. The agent&rsquo;s path (blue) is longer than the shortest path (green) that SPL is measured against. Light grey indicates explored space. Dark grey indicates unknown space.
+          </p>
         </div>
       </div>
     </div>
@@ -289,12 +287,10 @@
           <img src="./static/images/clean_poster_results_table.png"
                alt="Results table on HM3D ObjectNav validation comparing trained and training-free methods by SR, SPL and DTG."
                loading="lazy" decoding="async">
-          <div class="content has-text-justified">
-            <p class="figure-caption">
-              HM3D ObjectNav validation split. SR: success rate. SPL: success weighted by path length. DTG: distance to goal.
-              RPV-V1 and RPV-V2 are variants of our method. RPV-V2 has the highest SPL of all baselines, and the best SR and DTG among training-free baselines.
-            </p>
-          </div>
+          <p class="figure-caption">
+            HM3D ObjectNav validation split. SR: success rate. SPL: success weighted by path length. DTG: distance to goal.
+            RPV-V1 and RPV-V2 are variants of our method. RPV-V2 has the highest SPL of all baselines, and the best SR and DTG among training-free baselines.
+          </p>
         </div>
       </div>
 

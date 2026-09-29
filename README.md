@@ -20,6 +20,8 @@
   <a href="https://arxiv.org/abs/2607.25448">arXiv</a>
 </p>
 
+## Installation
+
 **This has been tested on Ubuntu 22.04 & 24.04**
 
 1. **Install miniconda3**

@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import open3d as o3d
 
+from vlfm.utils.debug_log import dbg
 from vlfm.utils.geometry_utils import (
     extract_yaw,
     get_point_cloud,
@@ -17,6 +18,11 @@ from vlfm.utils.geometry_utils import (
 class ObjectPointCloudMap:
     clouds: Dict[str, np.ndarray] = {}
     use_dbscan: bool = True
+    # Minimum camera-to-object distance (m) for a detection to be trusted and
+    # registered. Tuned at 1.0 for Spot/Habitat (objects viewed from afar);
+    # override lower for small robots that view objects up close (e.g.
+    # TurtleBot4 sets this to 0.3).
+    min_object_distance: float = 1.0
 
     def __init__(self, erosion_size: float) -> None:
         self._erosion_size = erosion_size
@@ -43,6 +49,7 @@ class ObjectPointCloudMap:
         """Updates the object map with the latest information from the agent."""
         local_cloud = self._extract_object_cloud(depth_img, object_mask, min_depth, max_depth, fx, fy)
         if len(local_cloud) == 0:
+            dbg(f"[object_map] DROPPED '{object_name}': empty cloud (mask eroded away or no valid depth)")
             return
 
         # For second-class, bad detections that are too offset or out of range, we
@@ -65,8 +72,9 @@ class ObjectPointCloudMap:
         curr_position = tf_camera_to_episodic[:3, 3]
         closest_point = self._get_closest_point(global_cloud, curr_position)
         dist = np.linalg.norm(closest_point[:3] - curr_position)
-        if dist < 1.0:
+        if dist < self.min_object_distance:
             # Object is too close to trust as a valid object
+            dbg(f"[object_map] DROPPED '{object_name}': dist={dist:.2f}m < min={self.min_object_distance:.2f}m")
             return
 
         if object_name in self.clouds:

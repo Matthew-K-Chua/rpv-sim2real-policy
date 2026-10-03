@@ -11,15 +11,25 @@ class TrajectoryVisualizer:
     _cached_path_mask: Union[np.ndarray, None] = None
     _origin_in_img: Union[np.ndarray, None] = None
     _pixels_per_meter: Union[float, None] = None
-    agent_line_length: int = 10
-    agent_line_thickness: int = 3
     path_color: tuple = (0, 255, 0)
-    path_thickness: int = 3
     scale_factor: float = 1.0
+    # Marker sizes are specified in METRES so they stay proportional to the map
+    # at any resolution (pixels_per_meter). Small physical values keep the agent
+    # and path from dominating a narrow (~1 m) corridor.
+    agent_radius_m: float = 0.07
+    agent_heading_len_m: float = 0.18
+    agent_heading_thickness_m: float = 0.025
+    path_thickness_m: float = 0.035
 
     def __init__(self, origin_in_img: np.ndarray, pixels_per_meter: float):
         self._origin_in_img = origin_in_img
         self._pixels_per_meter = pixels_per_meter
+
+    def _m_to_px(self, meters: float, min_px: int = 1) -> int:
+        """Convert a physical size in metres to a pixel size, scaled by the map
+        resolution and the (legacy) scale_factor, with a floor so it never
+        vanishes."""
+        return max(min_px, int(round(meters * self._pixels_per_meter * self.scale_factor)))
 
     def reset(self) -> None:
         self._num_drawn_points = 1
@@ -69,7 +79,7 @@ class TrajectoryVisualizer:
             tuple(px_a[::-1]),
             tuple(px_b[::-1]),
             255,
-            int(self.path_thickness * self.scale_factor),
+            self._m_to_px(self.path_thickness_m),
         )
 
         return img
@@ -77,23 +87,25 @@ class TrajectoryVisualizer:
     def _draw_agent(self, img: np.ndarray, camera_position: np.ndarray, camera_yaw: float) -> np.ndarray:
         """Draws the agent on the image and returns it"""
         px_position = self._metric_to_pixel(camera_position)
+        agent_radius_px = self._m_to_px(self.agent_radius_m, min_px=2)
+        heading_len_px = self._m_to_px(self.agent_heading_len_m, min_px=3)
         cv2.circle(
             img,
             tuple(px_position[::-1]),
-            int(8 * self.scale_factor),
+            agent_radius_px,
             (255, 192, 15),
             -1,
         )
         heading_end_pt = (
-            int(px_position[0] - self.agent_line_length * self.scale_factor * np.cos(camera_yaw)),
-            int(px_position[1] - self.agent_line_length * self.scale_factor * np.sin(camera_yaw)),
+            int(px_position[0] - heading_len_px * np.cos(camera_yaw)),
+            int(px_position[1] - heading_len_px * np.sin(camera_yaw)),
         )
         cv2.line(
             img,
             tuple(px_position[::-1]),
             tuple(heading_end_pt[::-1]),
             (0, 0, 0),
-            int(self.agent_line_thickness * self.scale_factor),
+            self._m_to_px(self.agent_heading_thickness_m),
         )
 
         return img

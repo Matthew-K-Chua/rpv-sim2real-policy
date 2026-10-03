@@ -221,3 +221,15 @@ __marimo__/
 
 # Model checkpoints
 checkpoints/*.pt
+
+# --- real-robot deployment ---
+# Vendored upstream clone, obtained via git clone (see the README)
+sam3/
+# Model weights
+checkpoints/
+*.ts
+# Run outputs
+logs/
+map_debug/
+value_map_imgs/
+rosbags/

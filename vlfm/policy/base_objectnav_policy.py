@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -27,6 +27,7 @@ from vlfm.vlm.yoloe import YOLOEClient
 
 # This may be needed
 from vlfm.vlm.detections import ObjectDetections
+from vlfm.vlm.server_wrapper import str_to_image, str_to_mask
 
 # from vlfm.vlm.blip2 import BLIP2Client
 # from vlfm.vlm.grounding_dino import GroundingDINOClient, ObjectDetections
@@ -40,17 +41,23 @@ try:
 except Exception:
 
     class BasePolicy:  # type: ignore
-        pass
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
 
 
 class BaseObjectNavPolicy(BasePolicy):
     _target_object: str = ""
     _policy_info: Dict[str, Any] = {}
-    _object_masks: Union[np.ndarray, Any] = None  # set by ._update_object_map()
+    _object_masks: Union[np.ndarray, Any] = None  # target-only; set by ._update_object_map()
+    # Every non-target segment SAM3 returned this step. Visualization only -- lets
+    # the operator see that e.g. a wheelie bin *was* segmented even when the goal
+    # is something else (only _object_masks feeds the object point-cloud map).
+    _segment_masks: Union[np.ndarray, Any] = None
     _stop_action: Union[Tensor, Any] = None  # MUST BE SET BY SUBCLASS
     _observations_cache: Dict[str, Any] = {}
     _non_coco_caption = ""
     _load_yolo: bool = True
+    _load_pointnav: bool = True
 
     def __init__(
         self,
@@ -64,6 +71,8 @@ class BaseObjectNavPolicy(BasePolicy):
         max_obstacle_height: float = 0.88,
         agent_radius: float = 0.18,
         obstacle_map_area_threshold: float = 1.5,
+        map_size: int = 1000,
+        pixels_per_meter: int = 20,
         hole_area_thresh: int = 100000,
         use_vqa: bool = False,
         vqa_prompt: str = "Is this ",
@@ -82,13 +91,27 @@ class BaseObjectNavPolicy(BasePolicy):
         # if use_vqa:
         #     self._vqa = BLIP2Client(port=int(os.environ.get("BLIP2_PORT", "12185")))
 
-        # Initialise new vision models in pipeline
-        self._object_masker = Mask2FormerClient(port=int(os.environ.get("MASK2FORMER_PORT", "12181")))
+        # Initialise new vision models in pipeline.
+        # Embodied-RPV-NOTE: Mask2Former ("stuff"-stripping) is stage 1 of the RPV
+        # pipeline and is ON by default. The TurtleBot4 stack runs with
+        # SKIP_MASK2FORMER=1 to free VRAM on an 8 GB card, which is a DEVIATION
+        # from the benchmarked pipeline. Constructing the client only when the
+        # stage is enabled keeps _object_masker from being a missing attribute
+        # on the skip path (it previously raised AttributeError mid-episode).
+        self._skip_mask2former = os.environ.get("SKIP_MASK2FORMER", "") == "1"
+        if self._skip_mask2former:
+            print("SKIP_MASK2FORMER=1 - not connecting to Mask2Former; images are not stuff-stripped.")
+            self._object_masker = None
+        else:
+            self._object_masker = Mask2FormerClient(port=int(os.environ.get("MASK2FORMER_PORT", "12181")))
         self._object_detector = YOLOEClient(port=int(os.environ.get("YOLOE_PORT", "12184")))
         self._object_segmenter = SAM3Client(port=int(os.environ.get("SAM3_PORT", "12183")))
         self._clip = CLIPClient(port=int(os.environ.get("CLIP_PORT", "12182")))     # Maybe should be called _vqa
 
-        self._pointnav_policy = WrappedPointNavResNetPolicy(pointnav_policy_path)
+        if self._load_pointnav:
+            self._pointnav_policy = WrappedPointNavResNetPolicy(pointnav_policy_path)
+        else:
+            self._pointnav_policy = None
         self._object_map: ObjectPointCloudMap = ObjectPointCloudMap(erosion_size=object_map_erosion_size)
         self._depth_image_shape = tuple(depth_image_shape)
         self._pointnav_stop_radius = pointnav_stop_radius
@@ -99,7 +122,11 @@ class BaseObjectNavPolicy(BasePolicy):
         self._non_coco_threshold = non_coco_threshold
 
         self._num_steps = 0
-        self._steps_between_detections = 3
+        # Embodied-RPV-NOTE: upstream cadence is every 3rd explore step. The
+        # TurtleBot4 stack raises the rate (STEPS_BETWEEN_DETECTIONS=1) because a
+        # real robot covers far less ground per step; changing the default would
+        # silently change how many signals a benchmark run accumulates.
+        self._steps_between_detections = int(os.environ.get("STEPS_BETWEEN_DETECTIONS", 3))
         self._navigate_redetect_interval = 3
         self._navigate_step_counter = 0
         self._did_reset = False
@@ -107,6 +134,20 @@ class BaseObjectNavPolicy(BasePolicy):
         self._done_initializing = False
         self._called_stop = False
         self._compute_frontiers = compute_frontiers
+        # Shared map geometry — ObstacleMap and ValueMap must agree on both
+        # (see assertion in ValueMap.__init__). Overridable from the environment
+        # so a whole experiment stack (Habitat entrypoint and the TurtleBot
+        # policy server alike) can be pinned to one resolution from one place;
+        # the two must never be set independently.
+        self._map_size = int(os.environ.get("VLFM_MAP_SIZE", map_size))
+        self._pixels_per_meter = int(os.environ.get("VLFM_PIXELS_PER_METER", pixels_per_meter))
+        map_size, pixels_per_meter = self._map_size, self._pixels_per_meter
+        print(
+            f"[map geometry] {map_size} px @ {pixels_per_meter} px/m = "
+            f"{map_size / pixels_per_meter:.1f} m across, "
+            f"{100.0 / pixels_per_meter:.1f} cm per cell",
+            flush=True,
+        )
         if compute_frontiers:
             self._obstacle_map = ObstacleMap(
                 min_height=min_obstacle_height,
@@ -114,13 +155,14 @@ class BaseObjectNavPolicy(BasePolicy):
                 area_thresh=obstacle_map_area_threshold,
                 agent_radius=agent_radius,
                 hole_area_thresh=hole_area_thresh,
+                size=map_size,
+                pixels_per_meter=pixels_per_meter,
             )
-        # Flag to do either object-object or object-room-object RPV cooccurrence
-        self._direct_object_object: bool = os.environ.get("DIRECT_OBJECT_OBJECT", "false").lower() in ("true", "1", "yes") # Default to RPV mode
 
     def _reset(self) -> None:
         self._target_object = ""
-        self._pointnav_policy.reset()
+        if self._pointnav_policy is not None:
+            self._pointnav_policy.reset()
         self._object_map.reset()
         self._last_goal = np.zeros(2)
         self._num_steps = 0
@@ -148,6 +190,14 @@ class BaseObjectNavPolicy(BasePolicy):
         self._pre_step(observations, masks)
 
         object_map_rgbd = self._observations_cache["object_map_rgbd"]
+
+        # SAM3's confidence for the target THIS step: the highest score among the
+        # segments SAM3 labelled with the target, or None when SAM3 did not run
+        # this step (explore runs it every _steps_between_detections steps,
+        # navigate every _navigate_redetect_interval) or returned no target
+        # segment. Distinct from ``target_detected``, which is the object map's
+        # memory and stays True once the target has been seen at all.
+        self._target_confidence: Optional[float] = None
 
         # Skip the detection/segmentation pipeline when already navigating to a
         # confirmed goal. The goal is derived from the object map, which persists
@@ -225,6 +275,7 @@ class BaseObjectNavPolicy(BasePolicy):
     def _initialize(self) -> Tensor:
         raise NotImplementedError
 
+
     def _explore(self, observations: "TensorDict") -> Tensor:
         raise NotImplementedError
 
@@ -244,6 +295,7 @@ class BaseObjectNavPolicy(BasePolicy):
             "gps": str(self._observations_cache["robot_xy"] * np.array([1, -1])),
             "yaw": np.rad2deg(self._observations_cache["robot_heading"]),
             "target_detected": self._object_map.has_object(self._target_object),
+            "target_confidence": getattr(self, "_target_confidence", None),
             "target_point_cloud": target_point_cloud,
             "nav_goal": self._last_goal,
             "stop_called": self._called_stop,
@@ -258,16 +310,62 @@ class BaseObjectNavPolicy(BasePolicy):
 
         annotated_depth = self._observations_cache["object_map_rgbd"][0][1] * 255
         annotated_depth = cv2.cvtColor(annotated_depth.astype(np.uint8), cv2.COLOR_GRAY2RGB)
-        if self._object_masks.sum() > 0:
+
+        # Embodied-RPV-NOTE: ANNOTATED_RGB_BASE picks what the status / run-record
+        # frame is drawn on.
+        #   yoloe  (upstream default) YOLO-E's own result.plot(): its boxes and
+        #          labels, SAM3 contours on top. Falls back to the raw frame when
+        #          YOLO-E is skipped. NOTE result.plot() is BGR (the detector is
+        #          fed BGR) while the servers encode this as RGB, so the panel
+        #          shows swapped colours on this path -- left as upstream had it.
+        #   raw    the camera frame, SAM3 segments only: every segment outlined
+        #          (yellow) and labelled with SAM3's label, the target in red.
+        #          What a SAM3-prompt experiment wants to look at.
+        annotated_frame = detections.get("annotated_frame") if isinstance(detections, dict) else None
+        raw_frame = self._observations_cache["object_map_rgbd"][0][0]
+        annotate_base = os.environ.get("ANNOTATED_RGB_BASE", "yoloe").strip().lower()
+        if annotate_base == "raw" or annotated_frame is None:
+            base_frame = raw_frame
+        else:
+            base_frame = annotated_frame
+        # Copy: drawContours draws in place, and the raw frame is the cached
+        # observation other stages of this step still read.
+        annotated_rgb = np.ascontiguousarray(base_frame).copy()
+
+        # Non-target segments first (yellow), so the target outline draws over them.
+        if self._segment_masks is not None and self._segment_masks.sum() > 0:
+            contours, _ = cv2.findContours(self._segment_masks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            annotated_rgb = cv2.drawContours(annotated_rgb, contours, -1, (255, 255, 0), 1)
+            annotated_depth = cv2.drawContours(annotated_depth, contours, -1, (255, 255, 0), 1)
+
+        if self._object_masks is not None and self._object_masks.sum() > 0:
             # If self._object_masks isn't all zero, get the object segmentations and
             # draw them on the rgb and depth images
             contours, _ = cv2.findContours(self._object_masks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            annotated_frame = detections.get("annotated_frame") if isinstance(detections, dict) else None
-            base_frame = annotated_frame if annotated_frame is not None else self._observations_cache["object_map_rgbd"][0][0]
-            annotated_rgb = cv2.drawContours(base_frame, contours, -1, (255, 0, 0), 2)
+            annotated_rgb = cv2.drawContours(annotated_rgb, contours, -1, (255, 0, 0), 2)
             annotated_depth = cv2.drawContours(annotated_depth, contours, -1, (255, 0, 0), 2)
-        else:
-            annotated_rgb = self._observations_cache["object_map_rgbd"][0][0]
+
+        if annotate_base == "raw":
+            # SAM3's label per segment, at the top-left of its box (or its
+            # centroid when SAM3 returned no box). Colour matches the outline.
+            for seg in self._policy_info.get("segments", []) or []:
+                label = seg.get("label")
+                if not label:
+                    continue
+                box = seg.get("box")
+                if box is not None and len(box) >= 2:
+                    x, y = int(box[0]), int(box[1])
+                else:
+                    cy, cx = seg.get("centroid_px", (0.0, 0.0))
+                    x, y = int(cx), int(cy)
+                score = seg.get("score")
+                text = f"{label} {score:.2f}" if isinstance(score, (int, float)) else str(label)
+                colour = (255, 0, 0) if seg.get("is_target") else (255, 255, 0)
+                y = max(y - 4, 12)
+                cv2.putText(annotated_rgb, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(annotated_rgb, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45, colour, 1, cv2.LINE_AA)
         policy_info["annotated_rgb"] = annotated_rgb
         policy_info["annotated_depth"] = annotated_depth
 
@@ -290,13 +388,36 @@ class BaseObjectNavPolicy(BasePolicy):
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
         # SKIP_MASK2FORMER: bypass Mask2Former masking when using COCO-only classes
-        if os.environ.get("SKIP_MASK2FORMER", "") == "1":
+        if self._skip_mask2former:
             masked_img = img
         else:
             # Mask "stuff" with Mask2Former
             masked_img = self._object_masker.mask_image(img)
         # Run YOLO-E on the masked image to get detections (unique labels, boxes, scores) as prompts
-        det = self._object_detector.predict(masked_img)  # dict: labels, boxes, scores, class_ids, unique_labels
+        if os.environ.get("SKIP_YOLOE", "") == "1":
+            # YOLO-E only generated SAM3 prompts; SAM3 is open-vocab. Bypass it and
+            # prompt SAM3 directly with the full reduced class list so objects YOLO-E
+            # was missing (microwave/bed/tv/toilet) still get segmented and scored.
+            # Embodied-RPV-NOTE: added for TurtleBot4 deployment (frees YOLO-E's
+            # VRAM). This removes stage 2 of the benchmarked pipeline and swaps a
+            # detector proposal for a fixed class list, so it is a DEVIATION --
+            # off unless SKIP_YOLOE=1 is set explicitly.
+            if not getattr(self, "_skip_yoloe_labels", None):
+                classes_yaml = os.environ.get("SKIP_YOLOE_CLASSES", "data/shortvis.yaml")
+                self._skip_yoloe_labels = load_lvis_class_names(classes_yaml, include_all_names=True)
+                print(
+                    f"SKIP_YOLOE=1 — bypassing YOLO-E; prompting SAM3 with "
+                    f"{len(self._skip_yoloe_labels)} classes from {classes_yaml}."
+                )
+            det = {
+                "labels": [],
+                "boxes": [],
+                "scores": [],
+                "class_ids": [],
+                "unique_labels": list(self._skip_yoloe_labels),
+            }
+        else:
+            det = self._object_detector.predict(masked_img)  # dict: labels, boxes, scores, class_ids, unique_labels
 
         # Ensure target classes are included in unique labels returned by YOLO-E for SAM3 prompts
         target_classes = [c for c in self._target_object.split("|") if c]
@@ -314,7 +435,6 @@ class BaseObjectNavPolicy(BasePolicy):
                 annotated_frame = None
 
         #print(f"GET OBJECT DETECTIONS: \nDetected labels: {det.get('labels', [])} \nUnique labels: {unique_labels} \nTarget classes: {target_classes}")
-        # path_to_save = f"/home/student/scicluna-rpv/RPV-SemNav/running-outputs/yoloe_detections_rgb/step_{self._num_steps}.jpg"
         # os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
         # if annotated_frame is not None:
         #     cv2.imwrite(path_to_save, annotated_frame)
@@ -373,6 +493,19 @@ class BaseObjectNavPolicy(BasePolicy):
         return action
 
 
+    def _note_target_confidence(self, score: Any) -> None:
+        """Keep the highest SAM3 score seen for the target during this step
+        (several RGBD tuples, or several target segments, may contribute)."""
+        if score is None:
+            return
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return
+        current = getattr(self, "_target_confidence", None)
+        if current is None or value > current:
+            self._target_confidence = value
+
     def _redetect_target_object(
         self,
         rgb: np.ndarray,
@@ -398,14 +531,19 @@ class BaseObjectNavPolicy(BasePolicy):
         height, width = rgb.shape[:2]
 
         # Rebuild _object_masks so the visualization overlay reflects the
-        # latest segmentation rather than the stale initial detection.
+        # latest segmentation rather than the stale initial detection. This pass
+        # only prompts SAM3 with the target, so there are no non-target segments.
         self._object_masks = np.zeros((height, width), dtype=np.uint8)
+        self._segment_masks = np.zeros((height, width), dtype=np.uint8)
+        sam_boxes = sam3_out.get("boxes", [])
+        sam_scores = sam3_out.get("scores", [])
+        segments: List[Dict[str, Any]] = []
 
         for m_idx, mask in enumerate(masks):
             label = sam_labels[m_idx] if m_idx < len(sam_labels) else None
             if label != target_label:
                 continue
-            mask_np = np.array(mask, dtype=bool)
+            mask_np = str_to_mask(mask)
             if mask_np.shape[:2] != (height, width):
                 mask_np = cv2.resize(
                     mask_np.astype(np.uint8), (width, height),
@@ -420,6 +558,20 @@ class BaseObjectNavPolicy(BasePolicy):
                 tf_camera_to_episodic,
                 min_depth, max_depth, fx, fy,
             )
+            coords = np.argwhere(mask_np)
+            score = sam_scores[m_idx] if m_idx < len(sam_scores) else None
+            self._note_target_confidence(score)
+            segments.append({
+                "label": label,
+                "box": sam_boxes[m_idx] if m_idx < len(sam_boxes) else None,
+                "score": score,
+                "mask": mask_np,
+                "centroid_px": coords.mean(axis=0).tolist() if coords.size > 0 else [0.0, 0.0],
+                "is_target": True,
+            })
+        # The label overlay reads these; without the reset a stale explore-step
+        # list would be printed over this step's outline.
+        self._policy_info["segments"] = segments
 
         cone_fov = get_fov(fx, depth.shape[1])
         self._object_map.update_explored(tf_camera_to_episodic, max_depth, cone_fov)
@@ -471,6 +623,7 @@ class BaseObjectNavPolicy(BasePolicy):
 
         height, width = rgb.shape[:2]
         self._object_masks = np.zeros((height, width), dtype=np.uint8)
+        self._segment_masks = np.zeros((height, width), dtype=np.uint8)
 
         # If depth is missing, try to infer (optional, same as original behavior)
         if np.array_equal(depth, np.ones_like(depth)) and unique_labels:
@@ -493,7 +646,7 @@ class BaseObjectNavPolicy(BasePolicy):
 
         # Update map with SAM3 masks and cache segment metadata for downstream scoring
         for m_idx, mask in enumerate(masks):
-            mask_np = np.array(mask, dtype=bool)
+            mask_np = str_to_mask(mask)
             if mask_np.shape[:2] != (height, width):
                 mask_np = cv2.resize(mask_np.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST).astype(bool)
 
@@ -503,6 +656,13 @@ class BaseObjectNavPolicy(BasePolicy):
 
             label = sam_labels[m_idx] if m_idx < len(sam_labels) else None
             is_target = label == target_label
+            score = sam_scores[m_idx] if m_idx < len(sam_scores) else None
+            if is_target:
+                self._note_target_confidence(score)
+
+            if not is_target:
+                # Visualization only -- never fed to the object point-cloud map.
+                self._segment_masks[mask_np] = 1
 
             if is_target:
                 # Only add to the object map (and mark contours) when the segment matches the target label
@@ -523,7 +683,7 @@ class BaseObjectNavPolicy(BasePolicy):
                 {
                     "label": label,
                     "box": sam_boxes[m_idx] if m_idx < len(sam_boxes) else None,
-                    "score": sam_scores[m_idx] if m_idx < len(sam_scores) else None,
+                    "score": score,
                     "mask": mask_np,
                     "centroid_px": centroid,
                     "is_target": is_target,
@@ -580,6 +740,8 @@ class VLFMConfig:
     object_map_erosion_size: int = 5
     exploration_thresh: float = 0.0
     obstacle_map_area_threshold: float = 1.5  # in square meters
+    map_size: int = 1000  # side length of the square map in pixels
+    pixels_per_meter: int = 20  # map resolution; extent_in_metres = map_size / pixels_per_meter
     min_obstacle_height: float = 0.61
     max_obstacle_height: float = 0.88
     hole_area_thresh: int = 100000

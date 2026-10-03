@@ -4,7 +4,6 @@ from typing import Any, List, Optional
 
 import numpy as np
 import torch
-import os
 
 # CLIP imports for setup and processing
 from torch.nn import CosineSimilarity
@@ -33,9 +32,6 @@ class CLIP:
         self.model = CLIPModel.from_pretrained(model_type).to(device)
         self.device = device
 
-        # Boolean flag to indicate whether to run direct object-object signal or object-room-object RPV
-        self._direct_object_object: bool = os.environ.get("DIRECT_OBJECT_OBJECT", "false").lower() in ("true", "1", "yes") # Default to RPV mode
-        print(f"SCICLUNA CLIP: Direct object-object mode: {self._direct_object_object}")
 
     def compute_text_embeddings(self, texts: Any) -> torch.Tensor:
         """
@@ -70,10 +66,6 @@ class CLIP:
         #print(f'Shape of query embedding (should be N x D): {q.shape}')
         c = self.compute_text_embeddings(candidates)  # [M, D] where M is the number of candidates, D is the embedding dimension
         #print(f'Shape of candidate embeddings (should be M x D): {c.shape}')
-
-        #print(f"SCICLUNA CLIP Cosine_Vector: Query embeddings shape: {q.shape}")
-        #print(f"SCICLUNA CLIP Cosine_Vector: Candidate embeddings shape: {c.shape}")
-
         sims = torch.nn.functional.cosine_similarity(q.unsqueeze(1), c.unsqueeze(0), dim=-1)  # [N, M] where each entry (i,j) is the cosine similarity between query i and candidate j
         #print(f'Shape of similarity vector (should be N x M): {sims.shape}')
         return sims
@@ -158,47 +150,29 @@ if __name__ == "__main__":
             # ISSUE: What if there are multiple queries?
             sims = self.cosine_vector(query, candidates)
 
-            print(f"SCICLUNA CLIP SERVER: Similarity vector: {sims}, Shape: {sims.shape}")
-            print(f"SCICLUNA CLIP SERVER: Candidates (detections): {candidates}, Target: {query}")
-
             # Apply softmax over similarity vector to get discrete probability distribution
-            if not self._direct_object_object:
-                #print(f"SCICLUNA CLIP SERVER: RPV mode")
-                probs = self.apply_softmax(sims, temperature)
+            probs = self.apply_softmax(sims, temperature)
             
-                # Calculate the dot product between a target probability distributions and the detected object probability distributions
-                if "target_prob_dist" in payload:
-                    # Should be 1xM vector where M is the number of candidates (same length as sims and probs)
-                    target_prob_dist = torch.tensor(payload["target_prob_dist"], device=self.device)
-                    
-                    # Detections probability distributions should be shape NxM where N is the number of detected objects and M is the number of candidates (same length as sims and probs)
-                    # Target probability distribution should be shape 1xM where M is the number of candidates (same length as sims and probs)
-                    # Dot product vector should then be (NxM) x (Mx1) → Nx1, where N is the number of detected objects and the single value for each object is the dot product between the target probability distribution and the object's probability distribution over the candidate labels.
-                    dot_products = self.calculate_dot_product(target_prob_dist, probs)
 
+            # Calculate the dot product between a target probability distributions and the detected object probability distributions
+            if "target_prob_dist" in payload:
+                # Should be 1xM vector where M is the number of candidates (same length as sims and probs)
+                target_prob_dist = torch.tensor(payload["target_prob_dist"], device=self.device)
+                
+                # Detections probability distributions should be shape NxM where N is the number of detected objects and M is the number of candidates (same length as sims and probs)
+                # Target probability distribution should be shape 1xM where M is the number of candidates (same length as sims and probs)
+                # Dot product vector should then be (NxM) x (Mx1) → Nx1, where N is the number of detected objects and the single value for each object is the dot product between the target probability distribution and the object's probability distribution over the candidate labels.
+                dot_products = self.calculate_dot_product(target_prob_dist, probs)
 
-
-                    response = {
-                        "similarities": sims.tolist(),
-                        "probabilities": probs.tolist(),
-                        "dot_products": dot_products.tolist(),
-                    }
-                else:
-                    print(f"Shape of probs: {probs.shape}, Shape of sims: {sims.shape}")
-
-                    response = {
-                        "similarities": sims.tolist(),
-                        "probabilities": probs.tolist(),
-                    }
-
-            else:
-                # If direct object-object mode, just return similarities without softmax or dot products
-                # Make sure dimension is (,M) so returned list is 1D
-                assert sims.dim() == 2 and sims.size(0) == 1, f"Expected similarity vector to be of shape (1, M), but got {sims.shape}"
-                sims = sims.squeeze(0)
-                #print(f"Sims shape after squeeze: {sims.shape}, should be 1D with length equal to number of candidates.")
                 response = {
                     "similarities": sims.tolist(),
+                    "probabilities": probs.tolist(),
+                    "dot_products": dot_products.tolist(),
+                }
+            else:
+                response = {
+                    "similarities": sims.tolist(),
+                    "probabilities": probs.tolist(),
                 }
 
             return response

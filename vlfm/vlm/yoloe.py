@@ -26,9 +26,15 @@ class YOLOE:
 
         # Set LVIS text prompts for prompt-based weights; safe for prompt-free too
         try:
-            # If LVIS_CLASSES exist, otherwise use COCO_CLASSES
-            lvis_classes = load_lvis_class_names("data/lvis.yaml", include_all_names=True)
-            print(f"YOLOE CLIENT: Loaded {len(lvis_classes)} LVIS class names for YOLOE")
+            # If LVIS_CLASSES exist, otherwise use COCO_CLASSES.
+            # Embodied-RPV-NOTE: the vocabulary is env-selectable so a deployment
+            # can narrow it (the TurtleBot4 stack points YOLOE_CLASSES at
+            # data/shortvis.yaml) without changing what a benchmark run detects.
+            # The default MUST stay data/lvis.yaml -- that is the vocabulary the
+            # upstream RPV/VLFM numbers were produced with.
+            classes_yaml = os.environ.get("YOLOE_CLASSES", "data/lvis.yaml")
+            lvis_classes = load_lvis_class_names(classes_yaml, include_all_names=True)
+            print(f"YOLOE CLIENT: Loaded {len(lvis_classes)} class names from {classes_yaml} for YOLOE")
             if len(lvis_classes) > 0:
                 print(f"YOLOE CLIENT: Setting YOLOE classes to LVIS classes")
                 self.yoloe_model.set_classes(lvis_classes, self.yoloe_model.get_text_pe(lvis_classes))
@@ -56,7 +62,6 @@ class YOLOE:
         """
         # # Save the image passed to this function to see if it is RGB or BGR (for debugging purposes)
         # # We want the image going into Mask2Former to be RGB
-        # path_to_save = f"/home/student/scicluna-rpv/RPV-SemNav/running-outputs/yoloe_input_images_bgr/step_{self._num_steps}.jpg"
         # os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
         # cv2.imwrite(path_to_save, image)
         # print(f"img channel means (0,1,2): {image[:,:,0].mean():.1f}, {image[:,:,1].mean():.1f}, {image[:,:,2].mean():.1f}")
@@ -85,7 +90,6 @@ class YOLOE:
             "unique_labels": list(set(labels)),
         }
 
-        # path_to_save = f"/home/student/scicluna-rpv/RPV-SemNav/running-outputs/yoloe_detections/in-model_step_{self._num_steps}.jpg"
         # os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
         # if result.plot() is not None:
         #     cv2.imwrite(path_to_save, result.plot())

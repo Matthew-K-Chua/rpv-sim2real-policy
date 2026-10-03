@@ -182,9 +182,13 @@ class ObstacleMap(BaseMap):
         vis_img[self._navigable_map == 0] = self.radius_padding_color
         # Draw obstacles in black
         vis_img[self._map == 1] = (0, 0, 0)
-        # Draw frontiers in blue (200, 0, 0)
+        # Draw frontiers in blue (200, 0, 0). Radius/thickness in METRES, scaled
+        # to the map resolution so the rings stay proportional (small) at any
+        # pixels_per_meter.
+        f_radius = max(2, int(round(0.11 * self.pixels_per_meter)))
+        f_thickness = max(1, int(round(0.025 * self.pixels_per_meter)))
         for frontier in self._frontiers_px:
-            cv2.circle(vis_img, tuple([int(i) for i in frontier]), 5, (200, 0, 0), 2)
+            cv2.circle(vis_img, tuple([int(i) for i in frontier]), f_radius, (200, 0, 0), f_thickness)
 
         vis_img = cv2.flip(vis_img, 0)
 

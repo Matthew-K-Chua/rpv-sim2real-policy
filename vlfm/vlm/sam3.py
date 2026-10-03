@@ -1,5 +1,6 @@
 # Adam Scicluna, 2026, for RPV pipeline. Based on sam.py.
 
+import gc
 import os
 from typing import Any, List, Optional
 
@@ -9,6 +10,7 @@ import torch
 from .server_wrapper import (
     ServerMixin,
     host_model,
+    mask_to_str,
     send_request,
     str_to_image,
 )
@@ -30,7 +32,7 @@ class SAM3:
         self,
         sam3_ckpt: str = "checkpoints/sam3.pt",
         bpe_path: Optional[str] = None,
-        conf_threshold: float = 0.6,
+        conf_threshold: float = 0.7,
         device: Optional[Any] = None,
     ) -> None:
         if device is None:
@@ -45,6 +47,14 @@ class SAM3:
 
         else:
             # If using the Ultralytics SAM3, load the model as such:
+            # imgsz belongs HERE, not on the per-call predictor(...) invocation:
+            # a per-call imgsz forces Ultralytics to re-run setup_model on every
+            # request (re-printing the device banner) and leaks ~3 GB/request
+            # until OOM. Setting it once in overrides keeps the input resolution
+            # the RPV pipeline was benchmarked at while setting the model up once.
+            # Embodied-RPV-NOTE: SAM3_IMGSZ exists only so a memory-constrained
+            # deployment can trade resolution for VRAM; leave it unset to match
+            # the benchmark.
             self.predictor = SAM3SemanticPredictor(
                 overrides = dict(
                     task="segment",
@@ -53,6 +63,7 @@ class SAM3:
                     conf=conf_threshold,
                     half=True,
                     device=device if device == "cpu" else "cuda",
+                    imgsz=int(os.environ.get("SAM3_IMGSZ", 644)),
                     save=False
                 )
             )
@@ -73,7 +84,6 @@ class SAM3:
         """
         # # Save the image passed to this function to see if it is RGB or BGR (for debugging purposes)
         # # We want the image going into Mask2Former to be RGB
-        # path_to_save = f"/home/student/scicluna-rpv/RPV-SemNav/running-outputs/sam3_input_images_rgb/step_{self._num_steps}.jpg"
         # os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
         # image.save(path_to_save)
 
@@ -87,11 +97,13 @@ class SAM3:
                 print("No text prompts. Skipping SAM3 inference.")
                 return masks, boxes, scores, labels
 
-            # Run Inference 
-            results = self.predictor(image, text=text_prompts, verbose=False, imgsz=644) 
+            # Run Inference. NOTE: do NOT pass imgsz here — a per-call imgsz forces
+            # Ultralytics to re-run setup_model every request (re-prints the device
+            # banner) and leaks ~3 GB/request until OOM. The size is set once in
+            # overrides=dict(...) at construction instead.
+            results = self.predictor(image, text=text_prompts, verbose=False)
             result = results[0]
 
-            # sam3_output_path = f"/home/student/scicluna-rpv/RPV-SemNav/running-outputs/sam3_output_images_rgb/step_{self._num_steps}.jpg"
             # os.makedirs(os.path.dirname(sam3_output_path), exist_ok=True)
             # result.save(filename=sam3_output_path)
             # self._num_steps += 1
@@ -109,7 +121,12 @@ class SAM3:
                 class_ids = result.boxes.cls.cpu().numpy().astype(int)
                 # Use result.names to map IDs back to the text labels you provided
                 labels = [result.names[i] for i in class_ids]
-                
+
+            # masks/boxes/scores/labels are now CPU copies — free the GPU result
+            # (and the predictor's cached tensors) so memory doesn't creep per request.
+            del results, result
+            gc.collect()
+            torch.cuda.empty_cache()
 
         else:
             # ENABLE FP16 INFERENCE HERE
@@ -164,8 +181,9 @@ if __name__ == "__main__":
             text_prompts = payload.get("text_prompts", [])
             masks, boxes, scores, labels = self.segment_masks(pil_image, text_prompts)
 
-            # Serialize masks as lists of lists (bool) for JSON; convert to Python lists
-            masks_serialisable = [m.astype(bool).tolist() for m in masks]
+            # Bit-pack masks (compact base64 + shape) rather than nested bool
+            # lists: ~30x smaller over JSON and avoids a large RAM spike.
+            masks_serialisable = [mask_to_str(m) for m in masks]
 
             return {
                 "masks": masks_serialisable,

@@ -14,7 +14,8 @@ from vlfm.utils.geometry_utils import closest_point_within_threshold
 
 # CLIP
 from vlfm.vlm.clip import CLIPClient
-from vlfm.vlm.room_types import ROOM_TYPES
+from vlfm.utils.debug_log import DEBUG as _RPV_DEBUG, dbg
+from vlfm.vlm.room_types import load_room_types
 
 try:
     from habitat_baselines.common.tensor_dict import TensorDict
@@ -25,6 +26,13 @@ PROMPT_SEPARATOR = "|"
 
 
 class BaseITMPolicy(BaseObjectNavPolicy):
+    # How frontier values are read off the value map. These are the upstream
+    # RPV/VLFM settings and what the published numbers used.
+    # Embodied-RPV-NOTE: TurtleBot4Mixin overrides both (see
+    # ValueMap.sort_waypoints for why sparse point-signals need them).
+    _waypoint_reduction: str = "median"
+    _clamp_waypoint_values: bool = False
+
     _target_object_color: Tuple[int, int, int] = (0, 255, 0)
     _selected__frontier_color: Tuple[int, int, int] = (0, 255, 255)
     _frontier_color: Tuple[int, int, int] = (0, 0, 255)
@@ -47,10 +55,12 @@ class BaseITMPolicy(BaseObjectNavPolicy):
     ):
         super().__init__(*args, **kwargs)
         self._itm = CLIPClient(port=int(os.environ.get("CLIP_PORT", "12182")))
-        self._room_types = ROOM_TYPES
+        self._room_types = load_room_types()
         self._text_prompt = text_prompt
         self._value_map: ValueMap = ValueMap(
             value_channels=len(text_prompt.split(PROMPT_SEPARATOR)),
+            size=self._map_size,  # must match the obstacle map (asserted in ValueMap.__init__)
+            pixels_per_meter=self._pixels_per_meter,
             use_max_confidence=use_max_confidence,
             obstacle_map=self._obstacle_map,  # Always pass obstacle map so FMM can use the free-space mask
         )
@@ -161,28 +171,25 @@ class BaseITMPolicy(BaseObjectNavPolicy):
 
         markers = []
 
-        # Draw frontiers on to the cost map
+        # Marker geometry is no longer specified here: ValueMap.visualize sizes
+        # every overlay as a fraction of its fixed output canvas, so rings stay
+        # the same size on screen however far the map has grown. Only the colour
+        # and the "selected" flag are semantic, so only those are passed.
+        #
+        # Room names used to be rendered next to each frontier; the labels are
+        # gone (they buried the heatmap), so no per-frontier room lookup is done.
         frontiers = self._observations_cache["frontier_sensor"]
         for frontier in frontiers:
-            marker_kwargs = {
-                "radius": self._circle_marker_radius,
-                "thickness": self._circle_marker_thickness,
-                "color": self._frontier_color,
-            }
-            markers.append((frontier[:2], marker_kwargs))
+            markers.append((frontier[:2], {"color": self._frontier_color}))
 
         if not np.array_equal(self._last_goal, np.zeros(2)):
-            # Draw the pointnav goal on to the cost map
+            # Draw the pointnav goal on to the cost map, last so its emphasised
+            # ring overdraws the plain candidate ring at the same position.
             if any(np.array_equal(self._last_goal, frontier) for frontier in frontiers):
                 color = self._selected__frontier_color
             else:
                 color = self._target_object_color
-            marker_kwargs = {
-                "radius": self._circle_marker_radius,
-                "thickness": self._circle_marker_thickness,
-                "color": color,
-            }
-            markers.append((self._last_goal, marker_kwargs))
+            markers.append((self._last_goal, {"color": color, "selected": True}))
         policy_info["value_map"] = cv2.cvtColor(
             self._value_map.visualize(markers, reduce_fn=self._vis_reduce_fn),
             cv2.COLOR_BGR2RGB,
@@ -228,54 +235,34 @@ class BaseITMPolicy(BaseObjectNavPolicy):
             query_labels = [seg.get("label") for seg in segments]
             if any(query_labels):
                 # ---- CLIP scoring ----
-                if self._direct_object_object:
-                    # Direct object-object scoring (no RPV or softmax, just similarities)
-                    segment_clip_resp = self._itm.cooccurrence(
-                        query=target_label,
-                        candidates=query_labels
-                    )
-                    segment_similarities = segment_clip_resp.get("similarities", []) or []
-                    print(f"SCICLUNA UPDATE VALUE MAP: Direct object-object CLIP similarities for target '{target_label}': {segment_similarities}")
-                    #print(f'Type of segment_similarities: {type(segment_similarities)}, Length: {len(segment_similarities)}')
-                
-                    assert len(segments) == len(segment_similarities), (
-                        f"Number of segments ({len(segments)}) and CLIP similarity responses "
-                        f"({len(segment_similarities)}) must match."
-                    )
+                target_clip_resp = self._itm.cooccurrence(query=target_label, candidates=self._room_types)
+                target_room_probs = target_clip_resp.get("probabilities", []) or []
 
-                    for idx, seg in enumerate(segments):
-                        # Call it "dot_product" for consistency with RPV mode, even though it's just a similarity score
-                        seg["dot_product"] = segment_similarities[idx][0] if isinstance(segment_similarities[idx], list) else segment_similarities[idx] 
-                        print(f"SCICLUNA UPDATE VALUE MAP: Segment {idx} label '{seg.get('label', 'unknown')}' similarity score: {seg['dot_product']}")
+                segment_clip_resp = self._itm.cooccurrence(
+                    query=query_labels,
+                    candidates=self._room_types,
+                    target_prob_dist=target_room_probs,
+                )
+                segment_probs = segment_clip_resp.get("probabilities", []) or []
+                segment_dot_products = segment_clip_resp.get("dot_products", []) or []
 
-                else:
-                    # Object-room-object RPV scoring
-                    target_clip_resp = self._itm.cooccurrence(query=target_label, candidates=self._room_types)
-                    target_room_probs = target_clip_resp.get("probabilities", []) or []
-                    #print(f"SCICLUNA UPDATE VALUE MAP: CLIP probabilities for target '{target_label}' over room types: {target_room_probs}")    
-                    
+                assert (
+                    len(segments) == len(segment_dot_products) == len(segment_probs)
+                ), (
+                    f"Number of segments ({len(segments)}), CLIP probability responses "
+                    f"({len(segment_probs)}), and CLIP dot product responses "
+                    f"({len(segment_dot_products)}) must all match."
+                )
 
-                    segment_clip_resp = self._itm.cooccurrence(
-                        query=query_labels,
-                        candidates=self._room_types,
-                        target_prob_dist=target_room_probs,
-                    )
-                    segment_probs = segment_clip_resp.get("probabilities", []) or []
-                    segment_dot_products = segment_clip_resp.get("dot_products", []) or []
-                    #print(f"SCICLUNA UPDATE VALUE MAP: CLIP probabilities for segments over room types: {segment_probs}, with segments: {[seg.get('label', 'unknown') for seg in segments]}")
-                    #print(f"SCICLUNA UPDATE VALUE MAP: CLIP dot products for segments with target '{target_label}': {segment_dot_products}")
-
-                    assert (
-                        len(segments) == len(segment_dot_products) == len(segment_probs)
-                    ), (
-                        f"Number of segments ({len(segments)}), CLIP probability responses "
-                        f"({len(segment_probs)}), and CLIP dot product responses "
-                        f"({len(segment_dot_products)}) must all match."
-                    )
-
-                    for idx, seg in enumerate(segments):
-                        seg["probability"] = segment_probs[idx]
-                        seg["dot_product"] = segment_dot_products[idx]
+                for idx, seg in enumerate(segments):
+                    seg["probability"] = segment_probs[idx]
+                    seg["dot_product"] = segment_dot_products[idx]
+                    # Predicted room = argmax of this segment's room distribution.
+                    probs = segment_probs[idx]
+                    if probs is not None and len(probs) == len(self._room_types):
+                        seg["room"] = self._room_types[int(np.argmax(probs))]
+                    else:
+                        seg["room"] = None
 
                 # ---- Project each segment centroid to episodic world coords ----
                 if "object_map_rgbd" not in self._observations_cache:
@@ -284,14 +271,25 @@ class BaseITMPolicy(BaseObjectNavPolicy):
 
                 rgb_obs, depth_obs, tf_cam, min_d, max_d, fx, fy = self._observations_cache["object_map_rgbd"][0]
 
+                # Minimum CLIP score for a detection to seed a value-map hotspot.
+                # Weak false positives (e.g. a tv at 0.125 for a "bathtub" goal)
+                # should not pull the robot. Env-tunable via MIN_SIGNAL_SCORE.
+                min_signal_score = float(os.environ.get("MIN_SIGNAL_SCORE", 0.0))
+
                 signals_placed = 0
                 for seg in segments:
+                    seg_label = seg.get("label", "unknown")
                     dot_prod = seg.get("dot_product")
-                    if dot_prod is None or dot_prod <= 0:
+                    if dot_prod is None or dot_prod <= 0 or dot_prod < min_signal_score:
+                        dbg(
+                            f"[signal-drop] {seg_label!r} score={dot_prod} below "
+                            f"MIN_SIGNAL_SCORE={min_signal_score:.3f} (or non-positive)"
+                        )
                         continue
 
                     centroid_px = seg.get("centroid_px")
                     if centroid_px is None:
+                        dbg(f"[signal-drop] {seg_label!r} has no centroid_px")
                         continue
 
                     mask = seg.get("mask")  # boolean mask for robust depth
@@ -299,15 +297,47 @@ class BaseITMPolicy(BaseObjectNavPolicy):
                         centroid_px, depth_obs, tf_cam, min_d, max_d, fx, fy, mask=mask
                     )
                     if world_xy is None:
+                        # Median masked depth fell outside (min_d, max_d). Common on
+                        # stereo rigs: textureless surfaces (plastic bins, blank walls)
+                        # return 0, which normalises to min_depth and is rejected.
+                        dbg(
+                            f"[signal-drop] {seg_label!r} unusable depth over mask "
+                            f"(median outside {min_d:.2f}-{max_d:.2f} m) -- no signal placed"
+                        )
                         continue
 
                     label = seg.get("label", "unknown")
                     score = float(dot_prod)
+                    room = seg.get("room")
 
-                    print(f"SCICLUNA UPDATE VALUE MAP: Adding object signal for '{label}' at {world_xy} with score {score:.4f} (Target: '{target_label}')")
+                    # Bearing diagnostic: classifies mis-placement as angular vs
+                    # radial. cam_bearing = bearing implied by the detection's image
+                    # column (left-positive, robot frame); world_bearing = bearing of
+                    # the placed world_xy relative to the robot, de-rotated by
+                    # heading. If they match -> geometry OK, error is radial (LiDAR
+                    # range/merge). If they differ by ~pi -> a true angular/sign flip.
+                    # Embodied-RPV-NOTE: added for TurtleBot4 deployment; the
+                    # trigonometry runs per detection per step, so it is computed
+                    # only under RPV_DEBUG=1.
+                    if _RPV_DEBUG:
+                        robot_xy = np.asarray(self._observations_cache["robot_xy"], dtype=float)
+                        robot_heading = float(self._observations_cache["robot_heading"])
+                        cx = depth_obs.shape[1] / 2.0
+                        col = float(centroid_px[1])
+                        cam_bearing = float(np.arctan2(-(col - cx), fx))
+                        rng = float(np.linalg.norm(world_xy - robot_xy))
+                        world_bearing = float(np.arctan2(world_xy[1] - robot_xy[1], world_xy[0] - robot_xy[0]))
+                        rel_bearing = float(np.arctan2(np.sin(world_bearing - robot_heading), np.cos(world_bearing - robot_heading)))
+                        err = float(np.arctan2(np.sin(rel_bearing - cam_bearing), np.cos(rel_bearing - cam_bearing)))
+                        dbg(
+                            f"[signal-dbg] {label!r} score={score:.3f} centroid(r,c)=({int(centroid_px[0])},{int(col)}) "
+                            f"robot_xy=({robot_xy[0]:+.2f},{robot_xy[1]:+.2f}) heading={np.rad2deg(robot_heading):+.0f} "
+                            f"world_xy=({world_xy[0]:+.2f},{world_xy[1]:+.2f}) range={rng:.2f}m "
+                            f"cam_brg={np.rad2deg(cam_bearing):+.0f} world_brg(rel)={np.rad2deg(rel_bearing):+.0f} "
+                            f"brg_err={np.rad2deg(err):+.0f}deg"
+                        )
 
-
-                    self._value_map.add_object_signal(world_xy, score, label)
+                    self._value_map.add_object_signal(world_xy, score, label, room=room)
                     signals_placed += 1
 
         # ---- Always recompute FMM / free-space every step ----
@@ -424,7 +454,13 @@ class ITMPolicy(BaseITMPolicy):
         self, observations: "TensorDict", frontiers: np.ndarray
     ) -> Tuple[np.ndarray, List[float]]:
         reduce_fn = self._vis_reduce_fn if len(self._text_prompt.split(PROMPT_SEPARATOR)) > 1 else None
-        return self._value_map.sort_waypoints(frontiers, 0.5, reduce_fn=reduce_fn)
+        return self._value_map.sort_waypoints(
+            frontiers,
+            0.5,
+            reduce_fn=reduce_fn,
+            reduction=self._waypoint_reduction,
+            clamp_negative=self._clamp_waypoint_values,
+        )
 
 
 class ITMPolicyV2(BaseITMPolicy):
@@ -451,7 +487,13 @@ class ITMPolicyV2(BaseITMPolicy):
         self, observations: "TensorDict", frontiers: np.ndarray
     ) -> Tuple[np.ndarray, List[float]]:
         reduce_fn = self._vis_reduce_fn if len(self._text_prompt.split(PROMPT_SEPARATOR)) > 1 else None
-        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5, reduce_fn=reduce_fn)
+        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(
+            frontiers,
+            0.5,
+            reduce_fn=reduce_fn,
+            reduction=self._waypoint_reduction,
+            clamp_negative=self._clamp_waypoint_values,
+        )
         return sorted_frontiers, sorted_values
 
 
@@ -477,7 +519,13 @@ class ITMPolicyV3(ITMPolicyV2):
     def _sort_frontiers_by_value(
         self, observations: "TensorDict", frontiers: np.ndarray
     ) -> Tuple[np.ndarray, List[float]]:
-        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5, reduce_fn=self._reduce_values)
+        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(
+            frontiers,
+            0.5,
+            reduce_fn=self._reduce_values,
+            reduction=self._waypoint_reduction,
+            clamp_negative=self._clamp_waypoint_values,
+        )
 
         return sorted_frontiers, sorted_values
 

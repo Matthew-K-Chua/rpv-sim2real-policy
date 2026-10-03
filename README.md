@@ -1,351 +1,343 @@
-<h1 align="center">RPV-SemNav</h1>
+# rpv-sim2real-policy
 
-<p align="center">
-  <a href="https://uts-ri.github.io/RPV-SemNav/">
-    <img src="assets/header.png" width="90%"
-         alt="Target: toilet. A detected mirror indicates the toilet is nearby. The room is searched and the toilet is found.">
-  </a>
-</p>
+Room-Mediated Co-occurrence (RPV), a zero-shot Object-Goal Navigation
+(ObjectNav) policy, packaged for deployment on physical robots. RPV extends
+Vision-Language Frontier Maps (VLFM) by assigning each detected object spatial
+context through the medium of room labels: an open-vocabulary perception stack
+segments and localises objects from RGB-D observations, maps each detection to a
+Room Probability Vector, compares that vector against the target, and writes the
+resulting semantic signal into a value map over which frontiers are ranked.
 
-<h2 align="center">Room-Mediated Co-occurrence for Zero-Shot Object-Centric Semantic Navigation via Frontier Scoring</h2>
+This repository is the policy half of the deployment reported in *Sim-to-Real
+Room-Mediated Object-Goal Navigation with ROS 2 and Nav2*. It presents the policy
+as an HTTP server, such that the perception and frontier scoring process is
+detached from agent control. The ROS 2 half, which supplies the observations and
+executes the chosen goal through Nav2, is a separate repository,
+[rpv-ros2-bridge](https://github.com/Matthew-K-Chua/rpv-ros2-bridge).
 
-<p align="center">
-  Adam Scicluna, Gavin Paul, Alen Alempijevic<br>
-  University of Technology Sydney, Robotics Institute<br>
-  <b>IROS 2026</b>
-</p>
+We separate the two because `rclpy` is available only for Python 3.10 while the
+perception stack requires Python 3.12. On our rig both halves run on the same
+off-board GPU host and communicate over loopback, although nothing prevents the
+ROS half from running elsewhere. 
 
-<p align="center">
-  <a href="https://uts-ri.github.io/RPV-SemNav/">Project Page</a> |
-  <a href="https://arxiv.org/abs/2607.25448">arXiv</a>
-</p>
+## Contents
+
+- [What the policy does](#what-the-policy-does)
+- [Repository layout](#repository-layout)
+- [Installation](#installation)
+- [Running](#running)
+- [Configuration](#configuration)
+- [The policy interface](#the-policy-interface)
+- [Citation and attribution](#citation-and-attribution)
+
+## What the policy does
+
+```
+  rpv-ros2-bridge ── POST /rpv_policy ──> rpv_policy_server      :13000
+                                             ├─ CLIP             :12182
+                                             ├─ SAM 3            :12183
+                                             ├─ YOLOE            :12184
+                                             └─ ZoeDepth         :12185  (optional)
+  operator console ─ GET /status ─────────> value map, obstacle map, annotated RGB, state
+```
+
+At each tick the server receives an RGB snapshot, a depth raster, an occupancy
+grid, and an egocentric pose, and returns a single navigation goal. The sequence
+is as follows.
+
+1. **Detection.** The RGB frame is passed through the perception funnel. YOLOE
+   produces lightweight coarse proposals from its configured vocabulary, and
+   SAM 3 refines those proposals into instance masks such that poor detections
+   are removed. The funnel can also be collapsed to SAM 3 alone, prompted
+   directly from a short label list; see [the vocabularies](#the-vocabularies).
+2. **Localisation.** Each surviving mask is back-projected through the depth
+   raster and the camera extrinsics into the episodic frame. A detection closer
+   to the base origin than `min_object_distance` is discarded, as that geometry
+   is level with or behind the robot's leading edge and the back-projection
+   cannot be trusted for it.
+3. **Scoring.** CLIP scores each masked crop against the room lexicon, which
+   yields a Room Probability Vector per detection, and that vector is compared
+   against the target's own. The resulting scalar becomes the magnitude of the
+   signal written into the value map.
+4. **Propagation.** Each signal is propagated over the free space of the
+   occupancy grid by geodesic flood fill, decaying with distance, such that the
+   map carries a gradient rather than a set of isolated peaks.
+5. **Selection.** Frontiers are extracted from the occupancy grid and ranked on
+   the value map. The highest-valued frontier becomes the goal while the target
+   is undetected; once the target has been detected and localised the goal
+   becomes a point in front of it, and the policy calls stop on arriving within
+   `pointnav_stop_radius`.
+
+The occupancy grid is supplied by the ROS half rather than projected from the
+policy's own depth, which is one of our deployment deviations and is discussed
+below. A request carrying `is_first=true` clears the maps and pins the episodic
+origin at the robot's current pose. That flag is the only path by which a target
+reaches the policy, so a target that differs from the current one without it
+forces a reset rather than being pursued silently under the previous maps.
+
+The ZoeDepth server and the ROS node under `ros_nodes/` exist for a platform
+whose camera publishes colour only, and turn that stream into a dense metric
+raster registered to the colour frame by construction. They are not started when
+the camera supplies real aligned depth, which is the default configuration.
+
+## Repository layout
+
+```
+vlfm/
+  policy/
+    rpv_policy_server.py     the Flask server: POST /rpv_policy, GET /status, and the robot profiles
+    rpv_policies.py          the RPV policy: the initial sweep, frontier selection, arrival
+    itm_policy.py            value-map construction and frontier scoring
+    base_objectnav_policy.py the perception funnel and the object map
+    rpv_timing.py            per-stage step timing, behind RPV_TIMING=1
+    utils/                   the point-navigation network the policy carries
+  mapping/
+    obstacle_map.py          the obstacle map and frontier extraction
+    value_map.py             signal propagation, decay, and frontier ranking
+    object_point_cloud_map.py   3D centroid tracking for detected objects
+    base_map.py, traj_visualizer.py
+  vlm/
+    clip.py, sam3.py, yoloe.py, zoedepth.py   the model servers and their HTTP clients
+    mask2former.py           client only; the stage is disabled and its server is not shipped
+    depth_codec.py           the 16-bit PNG depth codec, whose encoder the ROS bridge imports
+    room_types.py, lvis_classes.py, coco_classes.py, detections.py
+    server_wrapper.py        the Flask plumbing shared by every model server
+  utils/                     geometry, image helpers, and the debug trace
+frontier_exploration_src/    vendored frontier detection, carrying our edits; install editable
+data/
+  shortvis.yaml              the SAM 3 prompt list used when YOLOE is bypassed
+  room_types_lab.yaml        the room lexicon CLIP scores detections against
+  lvis.yaml                  the 1203-class LVIS vocabulary, which conditions YOLOE
+  pointnav_weights.pth       weights for the point-navigation network
+  dummy_policy.pth           a placeholder policy, used only on the simulation path
+scripts/
+  launch_offboard_ai.sh      CLIP, SAM 3 and the policy server in one tmux session
+  launch_zoedepth_server.sh  the monocular depth server, for a colour-only camera
+ros_nodes/                   the ROS 2 side of ZoeDepth: a node and a launch file
+environment.yml              the conda environment, rpv-emb
+requirements.txt             its pip half
+```
 
 ## Installation
 
-**This has been tested on Ubuntu 22.04 & 24.04**
+A CUDA GPU is required. Our off-board host is a Dell Precision 5820 with an
+RTX 3090 and 24 GB of VRAM; SAM 3's weights alone are approximately 3.4 GB, and
+the stack has also run on an 8 GB card.
 
-1. **Install miniconda3**
+```bash
+git clone https://github.com/Matthew-K-Chua/rpv-sim2real-policy.git ~/rpv-sim2real-policy
+cd ~/rpv-sim2real-policy
 
-   Follow the instructions at https://www.anaconda.com/docs/getting-started/miniconda/install/linux-install
+conda env create -f environment.yml              # creates rpv-emb
+conda activate rpv-emb
+pip install -r requirements.txt
+pip install -e frontier_exploration_src/         # the vendored copy, which carries our edits
 
-   Turn off automatic conda init to the `base` environment:
-   ```bash
-   conda config --set auto_activate_base false
-   ```
-   Note: you can undo this later by running `conda init --reverse $SHELL`.
+git clone https://github.com/facebookresearch/sam3.git   # vendored by clone, and git-ignored
+pip install -e sam3
+```
 
-2. **Create the conda environment with base packages**
-   
-   Inside the "env_installation_files" directory:
-   ```bash
-   conda env create -f env_installation_files/environment-rpv.yml
-   ```
-   This creates an environment named `rpv`.
+Model weights are not committed. We create `checkpoints/`, which is git-ignored,
+and populate it:
 
-3. **Activate the created conda environment**
-   ```bash
-   conda activate rpv
-   ```
+| File | Required for |
+|---|---|
+| `checkpoints/sam3.pt` | Every configuration |
+| `checkpoints/yoloe-26x-seg.pt` | `SKIP_YOLOE=0`, which is the configuration we report |
 
-4. **Install base Python packages**
-   ```bash
-   pip install -r env_installation_files/requirements-rpv.txt
-   ```
+CLIP (`openai/clip-vit-base-patch32`) and, on the monocular path,
+`Intel/zoedepth-nyu` are retrieved by `transformers` on first use into
+`~/.cache/huggingface`. `data/pointnav_weights.pth` is committed. We do not
+install `vlfm` as a package, as the launcher scripts run it from the repository
+root, which is why they `cd` there first.
 
-5. **Clone habitat-sim v0.3.3 into the project root directory**
-   
-   In the project root directory:
-   ```bash
-   git clone --branch v0.3.3 https://github.com/facebookresearch/habitat-sim.git
-   ```
+We also install `earlyoom` to prevent memory lockup, though it is optional in stack:
 
-6. **Install habitat-sim from source**
+```bash
+sudo apt install earlyoom tmux && sudo systemctl enable --now earlyoom
+```
 
-   Follow the steps at https://github.com/facebookresearch/habitat-sim/blob/main/BUILD_FROM_SOURCE.md
+The ROS half locates this checkout at `~/rpv-sim2real-policy` by default. Export
+`RPV_POLICY_REPO=/path/to/it` otherwise.
 
-   You should not have to install habitat-sim's `requirements.txt`, as these requirements should already be covered by step 4. However, inside `habitat-sim`, you can check with:
-   ```bash
-   pip install -r requirements.txt --dry-run
-   ```
+## Running
 
-   Also check for Linux system dependencies:
-   ```bash
-   sudo apt-get install -y --no-install-recommends \
-     libjpeg-dev libglm-dev libgl1-mesa-glx libegl1-mesa-dev mesa-utils xorg-dev freeglut3-dev
-   ```
+In normal operation the ROS half's `scripts/launch_offboard.sh` calls this
+repository's launcher with the robot's depth band and camera tilt already derived
+from the robot profile, and places its tmux windows in the same session as SLAM,
+Nav2 and the bridge, such that the whole host side starts and stops as a unit. To
+start this half alone:
 
-   If planning to install habitat-sim with CUDA compatibility, ensure the `CUDA_HOME` environment variable is set:
-   ```bash
-   export CUDA_HOME=$CONDA_PREFIX
-   ```
+```bash
+./scripts/launch_offboard_ai.sh            # tmux session offboard_ai: vlm-clip, vlm-sam3, policy
+tmux attach -t offboard_ai                 # Ctrl-B w selects a window, Ctrl-B d detaches
+tmux kill-session -t offboard_ai
+```
 
-   Inside `habitat-sim`, install with the desired configuration environment variables. We used a headless system with CUDA, and turned bullet physics on:
-   ```bash
-   HABITAT_BUILD_GUI_VIEWERS=OFF HABITAT_WITH_CUDA=ON HABITAT_WITH_BULLET=ON \
-     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4>
-   ```
+To reproduce the configuration of the reported trials, which runs the full
+two-stage funnel:
 
-7. **Verify the habitat-sim installation**
+```bash
+SKIP_YOLOE=0 YOLOE_CLASSES=data/lvis.yaml ./scripts/launch_offboard_ai.sh
+```
 
-   To confirm the compiled bindings actually load without an `ImportError`, run:
-   ```bash
-   python -c "import habitat_sim; print(habitat_sim.__file__)"
-   ```
+**Run the launcher from a shell with no ROS sourced.** Sourcing ROS places
+`/opt/ros/humble/lib/python3.10/site-packages` on `PYTHONPATH`, and a conda
+Python 3.12 that inherits it imports ROS's `numpy` and `cv2` and fails in a
+manner indistinguishable from a broken installation. This is the most likely
+reason for a first bring-up failing on a machine where the identical stack has
+worked previously, so the launcher scrubs `PYTHONPATH`, `LD_LIBRARY_PATH`,
+`AMENT_PREFIX_PATH` and the remainder before activating conda. We never set
+`SCRUB_ROS_ENV=0`.
 
-   If compiling with `HABITAT_WITH_CUDA=ON`, verify the following prints `True`:
-   ```bash
-   python -c "import habitat_sim; print(habitat_sim.cuda_enabled)"
-   ```
-   If CUDA compatibility returns `False`, see [Common Installation Problems](#common-installation-problems) below.
+The launcher also does three things that are worth knowing about:
 
-8. **Install compatible habitat-lab and habitat-baselines versions with habitat-sim**
-   ```bash
-   pip install -r env_installation_files/requirements-habitat.txt -c requirements-rpv.txt
-   ```
+1. It sets `NO_PROXY` for loopback. A configured `http_proxy` will otherwise
+   attempt to proxy `127.0.0.1:13000`, and the resulting error names the proxy
+   rather than the policy.
+2. It pre-flights the ports and refuses to start if any one of them is already
+   held. A stale server on `:13000` is invisible until the bridge POSTs into it
+   and receives answers from the wrong policy.
+3. It waits on each port in turn, as a port only begins listening once that
+   model's weights have loaded, and it writes the policy's output to `logs/`.
 
-9. **Fix syntax errors in habitat-lab/habitat-baselines with Python 3.12**
-   ```bash
-   python fix_habitat_python312_new.py
-   ```
-   Confirm the fix with:
-   ```bash
-   python -c "import habitat; import habitat_baselines; print('habitat-lab OK, version:', habitat.__version__ if hasattr(habitat, '__version__') else 'imported'); print('habitat-baselines OK')"
-   ```
+For a colour-only camera, `scripts/launch_zoedepth_server.sh` starts the
+monocular depth model on `:12185` and prints the ROS command for the node that
+feeds it. The ROS half then runs with `DEPTH_SOURCE=zoedepth`.
 
-10. **Install editable versions of vlfm and frontier_exploration** (updated to work with Habitat v0.3.X)
+## Configuration
 
-    From the project root folder:
-    ```bash
-    pip install -e ./frontier_exploration_src -e ./vlfm -c <path to requirements-rpv.txt>
-    ```
+The policy is configured entirely through environment variables, of which the
+ROS half's launcher sets the robot-dependent ones. Deviations from the published
+RPV and VLFM defaults are tagged `Embodied-RPV-NOTE` in the source
+(`grep -rn "Embodied-RPV-NOTE" vlfm/ data/`), and the code's own defaults remain
+the benchmark's such that simulation stays comparable.
 
-11. **Install detectron2**
-    ```bash
-    pip install --no-build-isolation --no-deps \
-      "detectron2 @ git+https://github.com/facebookresearch/detectron2.git@fd27788985af0f4ca800bca563acdb700bb890e2"
-    ```
-    This must be its own step, as `--no-build-isolation` is needed. Detectron2's `setup.py` imports torch directly to detect your CUDA compute capability and compile custom ops, so it needs to see the already-installed torch, not a fresh isolated build env.
+### Geometry, which the ROS half derives per robot
 
-    To confirm the installation, check:
-    ```bash
-    python -c "import detectron2; import iopath; print('detectron2 OK, iopath version:', iopath.__version__)"
-    ```
-    Expected output: `detectron2 OK, iopath version: 0.1.10`
+| Variable | Default | Effect |
+|---|---|---|
+| `RPV_ROBOT` | `turtlebot4` | Selects the robot profile. An unset value is logged loudly rather than guessed, and must be set to `spot` on Spot |
+| `RPV_MIN_DEPTH_M`, `RPV_MAX_DEPTH_M` | per profile | The depth band. **This band is authoritative**, and the values carried in the request are read once only, to warn on a disagreement |
+| `RPV_CAMERA_PITCH_RAD`, `RPV_CAMERA_ROLL_RAD` | per profile | The camera tilt used when the request carries none, where positive pitch places the lens down |
+| `RPV_SCAN_ARRIVAL_M`, `RPV_HEADING_RADIUS_M` | per profile | The distance at which the heading is re-aimed at the value-map peak, and the radius searched for that peak |
+| `RPV_POLICY_HOST`, `RPV_POLICY_PORT` | per profile, `13000` | The bind address. Spot's profile binds loopback, as the bridge shares the host; the TurtleBot 4's binds `0.0.0.0` |
 
-12. **Install Mask2Former and the CUDA kernel for MSDeformAttn**
+The profiles themselves are the only per-robot values in this repository:
 
-    From the repo root directory, following https://github.com/facebookresearch/Mask2Former/blob/main/INSTALL.md (it should not be necessary to install Mask2Former's `requirements.txt`):
-    ```bash
-    git clone https://github.com/facebookresearch/Mask2Former.git
-    cd Mask2Former
-    pip install -r requirements.txt -c <path to requirements-rpv.txt>
-    cd mask2former/modeling/pixel_decoder/ops
-    ```
+| | Spot | TurtleBot 4 |
+|---|---|---|
+| `agent_radius` | 0.25 m | 0.19 m |
+| `pointnav_stop_radius` | 1.4 m | 0.9 m |
+| `min_object_distance` | 0.5 m | 0.3 m |
+| depth band | 0.3 to 2.0 m, raised to 3.0 m by the ROS launcher | 0.5 to 12.0 m |
+| camera pitch | 0.12 rad, overridden by the measured mount | 0.0 rad |
 
-    Mask2Former's custom CUDA kernel (`MultiScaleDeformableAttention`) was written against an older PyTorch API and fails to compile against modern PyTorch (2.x) with an error like:
-    ```
-    error: no suitable conversion function from "const at::DeprecatedTypeProperties" to "c10::ScalarType" exists
-    ```
-    This happens because the kernel calls `AT_DISPATCH_FLOATING_TYPES(value.type(), ...)`, and PyTorch removed the implicit `Tensor.type() -> ScalarType` conversion this relies on. Before building, patch the kernel source to use the modern equivalents:
-    ```bash
-    sed -i 's/value\.type()\.is_cuda()/value.is_cuda()/g' src/cuda/ms_deform_attn_cuda.cu
-    sed -i 's/AT_DISPATCH_FLOATING_TYPES(value\.type(),/AT_DISPATCH_FLOATING_TYPES(value.scalar_type(),/g' src/cuda/ms_deform_attn_cuda.cu
-    sed -i 's/value\.type()\.is_cuda()/value.is_cuda()/g' src/ms_deform_attn.h
-    ```
+`agent_radius` dilates the obstacle map by a square of side twice its value, and
+is therefore the narrowest gap the frontier search will offer. It must match the
+inscribed radius in the ROS half's Nav2 parameters and the `agent_radius_m` in
+its robot profile, or the policy will propose goals through gaps that Nav2 will
+not plan through. Spot's value is the half-*width* of its roughly 1.1 by 0.5 m
+footprint; we previously used the half-length of 0.55 m, which closed every gap
+narrower than 1.15 m and therefore every doorway.
 
-    Then build as normal:
-    ```bash
-    CUDA_HOME=$CONDA_PREFIX sh make.sh
-    ```
+`pointnav_stop_radius` is measured from the base origin. Spot's 1.4 m is the
+success distance we report, and it parks the nose approximately 0.85 m from the
+object, as the body origin sits roughly 0.55 m behind the nose.
 
-    Verify it built correctly, running the following commands from the `Mask2Former` directory:
-    ```bash
-    python -c "from mask2former.modeling.pixel_decoder.ops.functions import MSDeformAttnFunction; print('MSDeformAttn OK')"
-    python -c "import torch; import MultiScaleDeformableAttention; print('Compiled kernel loaded OK')"
-    ```
+### Perception
 
-    **Overall installation check** (from the repo root directory):
-    ```bash
-    python -c "
-    import torch
-    import habitat_sim
-    import habitat
-    import habitat_baselines
-    import detectron2
-    import sam3
-    import vlfm
-    import frontier_exploration
-    from Mask2Former.mask2former.modeling.pixel_decoder.ops.functions import MSDeformAttnFunction
-    print('torch CUDA available:', torch.cuda.is_available())
-    print('habitat_sim CUDA enabled:', habitat_sim.cuda_enabled)
-    print('All imports OK')
-    "
-    ```
+| Variable | Default | Effect |
+|---|---|---|
+| `CLIP_PORT`, `SAM3_PORT`, `YOLOE_PORT` | 12182, 12183, 12184 | The model server ports, which must match the clients in `vlfm/policy` |
+| `SKIP_YOLOE` | `1` in the launcher | `1` bypasses YOLOE entirely and prompts SAM 3 directly, which frees the detector's VRAM at the cost of recall |
+| `YOLOE_CLASSES` | `data/shortvis.yaml` in the launcher, `data/lvis.yaml` in the code | YOLOE's vocabulary when `SKIP_YOLOE=0`. We report `data/lvis.yaml` |
+| `SKIP_YOLOE_CLASSES` | `data/shortvis.yaml` | SAM 3's prompt list when `SKIP_YOLOE=1` |
+| `SKIP_MASK2FORMER` | `1` | `1` disables the panoptic masking stage, which our deployment removes |
+| `SAM3_CONF` | `0.35` in the launcher, `0.6` in the server's own default | SAM 3's confidence threshold |
+| `SAM3_IMGSZ` | `644` | SAM 3's input size, which we leave at the benchmark's value |
+| `ROOM_TYPES_FILE` | `data/room_types_lab.yaml` | The room lexicon from which Room Probability Vectors are formed |
+| `STEPS_BETWEEN_DETECTIONS` | `1` | The perception cadence, against the benchmark's every third explore step |
+| `ANNOTATED_RGB_BASE` | `raw` | What the status image is drawn on: `raw` outlines SAM 3's masks on the camera frame, `yoloe` uses the detector's own box plot |
 
-## Common Installation Problems
+YOLOE's confidence threshold is not an environment variable. It is the
+`conf_threshold` default of 0.3 in `vlfm/vlm/yoloe.py`, which is the value we
+report, and the server takes no flag for it.
 
-### Step 7: `habitat_sim.cuda_enabled` returns `False`
+### The vocabularies
 
-If CUDA compatibility returns `False` after building habitat-sim, force a clean rebuild:
+Which file conditions the perception stack depends on whether YOLOE runs, and
+the two paths are not interchangeable.
 
-1. Uninstall habitat-sim, clear any leftover CMake/scikit-build build directories from the prior installation, purge the pip cache, and make sure the conda environment is activated with `CUDA_HOME` set:
-   ```bash
-   pip uninstall habitat_sim -y
-   rm -rf build _skbuild *.egg-info
-   pip cache purge
-   export CUDA_HOME=$CONDA_PREFIX
-   ```
+| `SKIP_YOLOE` | File | Behaviour |
+|---|---|---|
+| `0`, which we report | `YOLOE_CLASSES`, set to `data/lvis.yaml` (1203 classes) | The full two-stage funnel: YOLOE proposes from this vocabulary and SAM 3 refines the proposals into masks. Requires `checkpoints/yoloe-26x-seg.pt` |
+| `1`, the launcher's default | `SKIP_YOLOE_CLASSES`, defaulting to `data/shortvis.yaml` (14 labels) | YOLOE is not started and SAM 3 is prompted directly with these labels |
 
-2. Reinstall with explicit CMake args:
-   ```bash
-   CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_WITH_CUDA=ON" \
-   HABITAT_SIM_HEADLESS=1 \
-   HABITAT_BUILD_GUI_VIEWERS=OFF \
-   HABITAT_WITH_CUDA=ON \
-   HABITAT_WITH_BULLET=ON \
-     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4> -v
-   ```
+Note that the launcher defaults `YOLOE_CLASSES` to `data/shortvis.yaml` rather
+than to the code's `data/lvis.yaml`, such that setting `SKIP_YOLOE=0` on its own
+yields a detector conditioned on 14 labels, which is neither configuration. Both
+variables must be set together.
 
-   OR, using the legacy (v0.3.3) env var names directly:
-   ```bash
-   HEADLESS=True \
-   WITH_CUDA=True \
-   WITH_BULLET=True \
-     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4> -v
-   ```
+The target is always prompted in either case, listed or not, so adding a target
+to a vocabulary changes nothing about whether it is detected. What a vocabulary
+determines is the *other* objects that are found, and those detections are what
+the value map is built from. 
 
-   **Note:** The official `BUILD_FROM_SOURCE.md` on habitat-sim's `main` branch documents the `HABITAT_WITH_CUDA` / `HABITAT_BUILD_GUI_VIEWERS` env vars for a newer scikit-build-core-based build system. `v0.3.3` predates that migration and uses a legacy `setup.py` that reads different, unprefixed variable names: `WITH_CUDA`, `HEADLESS`, `WITH_BULLET`. Using `main`'s documented variable names against this tag will silently build **without** CUDA — pip reports success either way, since the wrong env var name is just ignored, not rejected. This is the most common cause of step 7 failing.
+`data/room_types_lab.yaml` is the lexicon from which
+the Room Probability Vectors themselves are formed. We replaced the policy's
+published household rooms with nine labels specific to our university
+environment: meeting area, kitchen, office, elevator room, printing station,
+laboratory, exit, tooling, and lecture hall. The file should be changed
+according to the discretion of the researcher.
 
-   Full sequence for reference:
-   ```bash
-   export CUDA_HOME=$CONDA_PREFIX
-   git clone --branch v0.3.3 https://github.com/facebookresearch/habitat-sim.git
-   cd habitat-sim
-   HEADLESS=True WITH_CUDA=True WITH_BULLET=True \
-     pip install . --no-build-isolation -c <path to requirements-rpv.txt from step 4> -v
-   ```
+### Value map
 
-## Dataset Download
+| Variable | Default | Effect |
+|---|---|---|
+| `DECAY_SIGMA_M` | `2.0` | The decay of each detection's signal over free space. The gradient is the point, so a sigma that is large relative to the arena leaves every frontier scoring alike |
+| `MAX_PROPAGATION_M` | `6.0` | A hard geodesic cutoff, beyond which the signal is exactly zero. We keep it larger than the arena and allow sigma to do the shaping |
+| `PROPAGATION_SIGMA_CUTOFF` | `3.0` | Truncates propagation at this many sigmas |
+| `MIN_BLOB_AREA_M2` | `0.1` | Zeroes signal islands smaller than this; `0` disables the pruning |
+| `MAP_DEBUG` | `0` | Writes the frontier masks to `map_debug/` |
 
-HM3D dataset download is completed using the steps outlined under "Downloading the HM3D dataset" in VLFM's README: https://github.com/rai-opensource/vlfm#dart-downloading-the-hm3d-dataset
+### Throughput and logging
 
-1. **Obtain a Matterport Token ID and Secret**
+| Variable | Default | Effect |
+|---|---|---|
+| `RPV_STATUS_IMAGE_EVERY` | `3` | Encodes the console's three JPEGs every Nth step, each costing roughly 60 ms |
+| `VALUE_MAP_IMG_EVERY` | `5` | Writes value-map frames to `value_map_imgs/<run>/` every Nth step; `0` disables them |
+| `TIMED` | `0` | Reduces both of the above, for latency measurement |
+| `VLM_REQUEST_RETRIES`, `VLM_REQUEST_BACKOFF`, `VLM_BUSY_TIMEOUT` | `2`, `0.5`, `15.0` | Bound one model round trip to approximately 30 s, which is necessary as the stock bound exceeds the bridge's own timeout |
+| `RPV_TIMING` | `0` | One per-stage timing line per step |
+| `RPV_DEBUG` | `0` | Per-detection traces on stdout |
 
-2. **Set environment variables**
-   ```bash
-   export MATTERPORT_TOKEN_ID=<FILL IN FROM YOUR ACCOUNT INFO IN MATTERPORT>
-   export MATTERPORT_TOKEN_SECRET=<FILL IN FROM YOUR ACCOUNT INFO IN MATTERPORT>
-   export DATA_DIR=</path/to/data> # e.g. /home/mak/research/datasets/hm3d/data
-   export HM3D_OBJECTNAV=https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v1/objectnav_hm3d_v1.zip
-   ```
+## The policy interface
 
-   We recommend creating an external directory to house the dataset, and creating symbolic links to the dataset directories inside the RPV `data` directory.
+`POST /rpv_policy`, JSON:
 
-3. **Download the HM3D validation set**
-   ```bash
-   python -m habitat_sim.utils.datasets_download \
-     --username $MATTERPORT_TOKEN_ID --password $MATTERPORT_TOKEN_SECRET \
-     --uids hm3d_val_v0.2 \
-     --data-path $DATA_DIR &&
+| Field | Meaning |
+|---|---|
+| `rgb`, `rgb_order` | A base64 JPEG and its channel order, `"bgr"` or `"rgb"` |
+| `depth_png16` | A base64 16-bit PNG of millimetres, where 0 denotes invalid, carrying its own shape, and taking precedence over the two fields below. Encoded by `vlfm/vlm/depth_codec.py`, whose encoder the ROS bridge imports from here such that the two cannot drift |
+| `depth_row`, `depth_shape` | One row of a laser-scan curtain, which is tiled to the image here |
+| `depth_m` | A full float raster, retained for compatibility |
+| `occ_hash`; `occupancy`, `occ_shape`, `origin_x/y`, `resolution` | A hash of the occupancy grid, and the grid itself only when that hash is new. `{occ_cache_miss: true}` is returned when the full grid is required |
+| `robot_map_x/y/yaw`, `start_x/y/yaw` | The live pose and the pinned episodic origin, in the map frame |
+| `fx`, `fy`, `img_w`, `camera_height`, `camera_pitch`, `camera_roll` | Intrinsics and extrinsics, where positive pitch places the lens down |
+| `min_depth`, `max_depth` | Advisory only; the server's own band is authoritative and a disagreement is logged once |
+| `objectgoal` | The target class as free text. Synonyms may be supplied `\|`-separated, in which case all are prompted but only the first is matched against a returned mask's label |
+| `is_first` | The episode reset: clears the maps, pins the origin, and adopts the target. A target that differs from the current one without this flag forces a reset |
+| `finish_init` | Whether the initial sweep has completed |
 
-   # Download HM3D ObjectNav dataset episodes
-   wget $HM3D_OBJECTNAV &&
-   unzip objectnav_hm3d_v1.zip &&
-   mkdir -p $DATA_DIR/datasets/objectnav/hm3d &&
-   mv objectnav_hm3d_v1 $DATA_DIR/datasets/objectnav/hm3d/v1 &&
-   rm objectnav_hm3d_v1.zip
-   ```
+The response is `{mode, goal_map_xy, goal_yaw, called_stop, done_initializing}`.
+`GET /status` returns the policy's state together with the three images the
+operator console displays.
 
-   **Note:** These steps download HM3DSem-v0.2 scenes paired with `objectnav_hm3d_v1.zip` episodes. Per habitat-lab's dataset documentation, v1 episodes are officially paired with v0.1 scenes — however, this is the exact combination specified in VLFM's README, and is what was used to produce the results in this repository.
+## Citation and attribution
+The policy this package deploys is Room-Mediated Co-occurrence (Scicluna et al.,
+2026), which extends Vision-Language Frontier Maps (Yokoyama et al., 2024).
 
-   Verify with `find -maxdepth 4` that the directory tree follows the structure:
-   ```
-   .
-   ./scene_datasets
-   ./scene_datasets/hm3d
-   ./versioned_data
-   ./versioned_data/hm3d-0.2
-   ./versioned_data/hm3d-0.2/val-habitat-files.json.gz
-   ./versioned_data/hm3d-0.2/val-semantic-configs-files.json.gz
-   ./versioned_data/hm3d-0.2/val-configs-files.json.gz
-   ./versioned_data/hm3d-0.2/val-semantic-annots-files.json.gz
-   ./versioned_data/hm3d-0.2/hm3d
-   ./versioned_data/hm3d-0.2/hm3d/val
-   ./versioned_data/hm3d-0.2/hm3d/hm3d_annotated_basis.scene_dataset_config.json
-   ./datasets
-   ./datasets/objectnav
-   ./datasets/objectnav/hm3d
-   ./datasets/objectnav/hm3d/v1
-   ```
-
-4. **Copy `hm3d_annotated_val_basis` into `scene_datasets/hm3d`**
-   ```bash
-   cd <path to ${DATA_DIR}/versioned_data/hm3d-0.2/hm3d/val>
-   cp hm3d_annotated_val_basis.scene_dataset_config.json ..
-   ```
-
-5. **Create symbolic links from the dataset installation location to the RPV-SemNav `data` directory**
-   ```bash
-   cd <path to ${RPV_ROOT}/data>
-   ln -s <path to ${DATA_DIR}/datasets> datasets
-   ln -s <path to ${DATA_DIR}/scene_datasets> scene_datasets
-   ```
-
-## Model Checkpoints
-
-Required checkpoints:
-- `sam3.pt`
-- `yoloe-26x-seg.pt`
-- `ade20k-semseg-r50_model_final_500878.pkl`
-
-Download links for these checkpoints are a work in progress. Once obtained, SAM3 and YOLOE checkpoints should be saved to the `checkpoints` directory inside the project root directory, ADE20K checkpoints for Mask2Former should be saved in {ROOT_DIR}/Mask2Former/checkpoints/
-
-## Running Evaluation
-
-Running evaluation requires two terminal windows: one to launch the models for the vision pipeline, and one to run the Habitat simulator.
-
-1. **Launch the vision pipeline models**
-
-   From the project root directory:
-   ```bash
-   ./scripts/launch_dl_servers.sh
-   ```
-   Note: you may need to run `chmod +x` on this file first.
-
-2. **Run the evaluation script**
-
-   Run the following to evaluate on the HM3D dataset:
-   ```bash
-   python -m vlfm.run
-   ```
-
-   To save video output of validation episodes, run with the following environment variables set:
-   ```bash
-   python -m vlfm.run habitat_baselines.video_dir=${VIDEO_DIR} \
-     habitat_baselines.eval.video_option=${VIDEO_OPTION} \
-     habitat_baselines.video_fps=${VIDEO_FPS}
-   ```
-
-   For example, we set:
-   ```bash
-   VIDEO_DIR=<path to directory to save video output>
-   VIDEO_OPTION='["disk"]'
-   VIDEO_FPS=2
-   ```
-
-   To save episode data to a CSV file at the end of the evaluation, you can also set the `CSV_PATH` environment variable. This is not required to be passed as an argument. For example:
-   ```bash
-   export CSV_PATH={path to logging directory}/eval_stats.csv
-   ```
-
-## To Do
-
-- [ ] Upload V1 code
-- [ ] Upload steps to download model checkpoints
-
-## Citation
-
-If you find this work useful, please cite our paper:
 
 ```bibtex
 @misc{scicluna2026roommediatedcooccurrencezeroshotobjectcentric,
@@ -359,8 +351,6 @@ If you find this work useful, please cite our paper:
 }
 ```
 
-This work builds upon VLFM, which should also be cited if this work is used in any way:
-
 ```bibtex
 @inproceedings{yokoyama2024vlfm,
   title={VLFM: Vision-Language Frontier Maps for Zero-Shot Semantic Navigation},
@@ -369,3 +359,5 @@ This work builds upon VLFM, which should also be cited if this work is used in a
   year={2024},
 }
 ```
+
+

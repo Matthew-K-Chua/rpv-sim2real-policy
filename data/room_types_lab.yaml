@@ -1,0 +1,18 @@
+# Room-type candidates for the RPV prior when running in the lab rather than a
+# home. Selected with ROOM_TYPES_FILE=data/room_types_lab.yaml (see
+# vlfm/vlm/room_types.py); the TurtleBot4 launcher sets this.
+#
+# Embodied-RPV-NOTE: added for TurtleBot4 deployment. These replace the upstream
+# home rooms (bathroom/bedroom/kitchen/...), which do not exist in the test
+# space -- so results produced with this file are NOT comparable to RPV's
+# published numbers.
+room_types:
+  - meeting area
+  - kitchen
+  - office
+  - elevator room
+  - printing station
+  - laboratory
+  - exit
+  - tooling
+  - lecture hall

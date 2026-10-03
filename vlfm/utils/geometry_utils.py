@@ -180,6 +180,49 @@ def xyz_yaw_to_tf_matrix(xyz: np.ndarray, yaw: float) -> np.ndarray:
     return transformation_matrix
 
 
+def xyz_rpy_to_tf_matrix(xyz: np.ndarray, roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Position + full RPY orientation as a 4x4 transformation matrix.
+
+    The yaw-only :func:`xyz_yaw_to_tf_matrix` assumes the camera's optical axis
+    is horizontal, which is true of a TurtleBot 4's OAK-D and of every Habitat
+    sensor. It is NOT true of a camera bolted to Spot's back at a downward tilt:
+    a pitched camera back-projects every detection to the wrong ground range,
+    and the error grows with the detection's row offset from the image centre,
+    so it cannot be absorbed into ``camera_height``.
+
+    Convention matches :func:`get_point_cloud`, which emits ``(z, -x, -y)`` --
+    i.e. REP-103 body axes, x forward / y left / z up. Composition is
+    ``Rz(yaw) @ Ry(pitch) @ Rx(roll)``, which makes **positive pitch tilt the
+    lens DOWN** (``+x`` rotates toward ``-z``). That is the same sign convention
+    as the ``d435_pitch`` launch argument in rpv-ros2-bridge's ``launch/robot_onboard.launch.py``,
+    so a measured mount number can be passed straight through without negation.
+
+    ``xyz_rpy_to_tf_matrix(xyz, 0.0, 0.0, yaw)`` is identical to
+    ``xyz_yaw_to_tf_matrix(xyz, yaw)``.
+
+    Args:
+        xyz (np.ndarray): A 3D vector representing the position.
+        roll (float): Rotation about the forward axis, radians.
+        pitch (float): Rotation about the left axis, radians; positive is nose-down.
+        yaw (float): Rotation about the up axis, radians.
+    Returns:
+        np.ndarray: A 4x4 transformation matrix.
+    """
+    x, y, z = xyz
+    cos_r, sin_r = np.cos(roll), np.sin(roll)
+    cos_p, sin_p = np.cos(pitch), np.sin(pitch)
+    cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+
+    rot_x = np.array([[1.0, 0.0, 0.0], [0.0, cos_r, -sin_r], [0.0, sin_r, cos_r]])
+    rot_y = np.array([[cos_p, 0.0, sin_p], [0.0, 1.0, 0.0], [-sin_p, 0.0, cos_p]])
+    rot_z = np.array([[cos_y, -sin_y, 0.0], [sin_y, cos_y, 0.0], [0.0, 0.0, 1.0]])
+
+    transformation_matrix = np.eye(4)
+    transformation_matrix[:3, :3] = rot_z @ rot_y @ rot_x
+    transformation_matrix[:3, 3] = (x, y, z)
+    return transformation_matrix
+
+
 def closest_point_within_threshold(points_array: np.ndarray, target_point: np.ndarray, threshold: float) -> int:
     """Find the point within the threshold distance that is closest to the target_point.
 

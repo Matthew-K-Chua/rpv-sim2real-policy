@@ -20,6 +20,7 @@ except ImportError:
 
 from vlfm.mapping.base_map import BaseMap
 from vlfm.utils.geometry_utils import extract_yaw, get_rotation_matrix
+from vlfm.utils.debug_log import dbg
 from vlfm.utils.img_utils import (
     monochannel_to_inferno_rgb,
     pixel_value_within_radius,
@@ -51,6 +52,7 @@ class ValueMap(BaseMap):
         self,
         value_channels: int,
         size: int = 1000,
+        pixels_per_meter: int = 20,
         use_max_confidence: bool = True,
         fusion_type: str = "default",
         obstacle_map: Optional["ObstacleMap"] = None,  # type: ignore # noqa: F821
@@ -78,7 +80,7 @@ class ValueMap(BaseMap):
         """
         if PLAYING:
             size = 2000
-        super().__init__(size)
+        super().__init__(size, pixels_per_meter)
         self._value_map = np.zeros((size, size, value_channels), np.float32)
         self._value_channels = value_channels
         self._use_max_confidence = use_max_confidence
@@ -100,6 +102,17 @@ class ValueMap(BaseMap):
         if self._fmm_no_decay:
             print("FMM NO DECAY: enabled — flat score within radius")
 
+        # Truncate propagation at N sigma instead of the full radius. Crop cost is
+        # O(radius^2), so this is a latency lever -- at 3 sigma the discarded tail
+        # is <1.2% of peak. It still CHANGES the field, so it is off (0) by
+        # default and the TurtleBot4 stack opts in.
+        # Embodied-RPV-NOTE: added for TurtleBot4 deployment (latency).
+        self._propagation_sigma_cutoff: float = float(
+            os.environ.get("PROPAGATION_SIGMA_CUTOFF", 0.0)
+        )
+        if self._propagation_sigma_cutoff > 0:
+            print(f"PROPAGATION SIGMA CUTOFF: {self._propagation_sigma_cutoff:.1f} sigma")
+
         # FMM / raycast multi-seed: when centroid is inside an obstacle, all
         # free cells within this radius of the centroid become seeds.  Covers
         # both sides of furniture-sized objects (sofas, beds etc.).
@@ -115,14 +128,16 @@ class ValueMap(BaseMap):
         # Updated in-place on each new detection; used to prevent duplicate
         # signals for the same object across multiple detections.
         self._tracked_objects: List[Dict[str, Any]] = []
-        self._redetection_dist_m: float = 2.0  # same-label, same-position threshold
+        # same-label, same-position merge threshold. Env-tunable: in small envs
+        # (e.g. a 3x3 m room) the 2.0 m default is larger than the whole map and
+        # collapses distinct objects onto one wandering centroid.
+        self._redetection_dist_m: float = float(os.environ.get("REDETECT_DIST_M", 2.0))
         self._centroid_dirty_dist_m: float = 0.5  # centroid shift that triggers signal recomputation
 
         # Previous step's free-space mask — used for dirty-flag diffing
         self._prev_free_mask: Optional[np.ndarray] = None
-
-        # Flag to do either object-object or object-room-object RPV cooccurrence
-        self._direct_object_object: bool = os.environ.get("DIRECT_OBJECT_OBJECT", "false").lower() in ("true", "1", "yes") # Default to RPV mode
+        # Last blob-gate drop count, so the gate only logs when it changes
+        self._last_blob_drop_count: int = 0
 
         if self._obstacle_map is not None:
             assert self._obstacle_map.pixels_per_meter == self.pixels_per_meter
@@ -155,6 +170,7 @@ class ValueMap(BaseMap):
         self._label_signal_maps = {}
         self._tracked_objects = []
         self._prev_free_mask = None
+        self._last_blob_drop_count = 0
 
 
     # Tracked-object centroid positions (for visualisation markers)
@@ -187,6 +203,7 @@ class ValueMap(BaseMap):
         world_xy: np.ndarray,
         score: float,
         label: str,
+        room: Optional[str] = None,
     ) -> None:
         """Register or update a detected object for signal propagation.
 
@@ -197,12 +214,23 @@ class ValueMap(BaseMap):
             world_xy: Detection position in episodic metres (x, y).
             score: Peak value (e.g. CLIP dot-product in [0, 1]).
             label: Semantic label of the detected object.
+            room: Optional predicted room type for this detection (used only
+                for visualisation — pinning the label and labelling frontiers).
         """
         if score <= 0:
             return
 
         row, col = self._world_to_map_pixel(world_xy)
         if row < 0 or row >= self.size or col < 0 or col >= self.size:
+            # Off-canvas. Loud, because it is otherwise invisible: the detection
+            # is logged by [signal-dbg] upstream and then silently vanishes.
+            # Means map_size / pixels_per_meter is too small for the arena.
+            half_extent = 0.5 * self.size / self.pixels_per_meter
+            print(
+                f"[redetect] DROPPED '{label}' at world_xy=({world_xy[0]:+.2f},{world_xy[1]:+.2f}) "
+                f"-> px=({row},{col}) outside the {self.size}px canvas "
+                f"(+/-{half_extent:.1f} m). Increase map_size or lower pixels_per_meter."
+            )
             return
 
         # Re-detection handling
@@ -222,14 +250,16 @@ class ValueMap(BaseMap):
             if best_match_dist >= self._centroid_dirty_dist_m:
                 best_match_obj["dirty"] = True
             best_match_obj["world_xy"] = world_xy.copy()
-            print(f"[redetect] MERGED '{label}' (dist={best_match_dist:.2f}m, score={score:.3f})")
+            if room is not None:
+                best_match_obj["room"] = room
+            dbg(f"[redetect] MERGED '{label}' (dist={best_match_dist:.2f}m, score={score:.3f})")
 
         if not is_redetection:
             self._tracked_objects.append(
                 {"label": label, "world_xy": world_xy.copy(), "score": score,
-                 "dirty": True, "signal_cache": None}
+                 "room": room, "dirty": True, "signal_cache": None}
             )
-            print(f"[redetect] NEW '{label}' (score={score:.3f}, total={len(self._tracked_objects)})")
+            dbg(f"[redetect] NEW '{label}' (score={score:.3f}, total={len(self._tracked_objects)})")
 
     def _place_gaussian(
         self,
@@ -319,8 +349,6 @@ class ValueMap(BaseMap):
             ``(r0, r1, c0, c1, signal_crop)`` or ``None`` on failure.
         """
         H = W = self.size
-
-        #print(f"SCICLUNA FMM: Computing FMM crop for centroid at ({center_row}, {center_col}), radius {radius_px}px, peak {peak_value:.3f}, sigma {sigma_px:.1f}px")
 
         # Crop to local window (centre ± radius_px with margin)
         # e.g. max_prop=6 m, ppm=20 → radius_px=120, margin=12, crop ≈ 262×262
@@ -513,6 +541,21 @@ class ValueMap(BaseMap):
                 if paint_idx.size > 0:
                     signal[rs[paint_idx], cs[paint_idx]] = peak_value
 
+        # --- Fill sampling holes -------------------------------------------
+        # Ray positions are rounded to integer pixels, so at large radii two
+        # adjacent rays land on the SAME pixel and leave their neighbour
+        # unpainted -- isolated unpainted specks inside an otherwise visible
+        # region (measured: ~60 px, all at 5.1-6.0 m from the seed, none nearer).
+        # Raising the ray count would fix it by brute force but raycast is
+        # already the slowest mode; closing the holes costs ~1 ms instead.
+        # The fill is masked to free cells, so it can never paint through a wall
+        # or extend the signal past its line-of-sight boundary.
+        painted = (signal > 0).astype(np.uint8)
+        closed = cv2.morphologyEx(painted, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        holes = (closed > 0) & (painted == 0) & (local_free >= 0.5)
+        if holes.any():
+            signal[holes] = peak_value
+
         return (r0, r1, c0, c1, signal)
 
 
@@ -556,26 +599,33 @@ class ValueMap(BaseMap):
             # Adaptive sigma: higher-scoring objects influence a larger area
             sigma_min_m = max(0.5, self._decay_sigma_m * 0.5)
             sigma_max_m = max(sigma_min_m + 0.1, self._decay_sigma_m * 2.5)
-            if not self._direct_object_object:
-                weight = np.sqrt(np.clip(obj["score"], 0.0, 1.0))
-                #print(f"RPV mode: using sqrt(score) for sigma weight: {obj['score']:.3f}, weight={weight:.3f}")
-            else:
-                weight = np.clip(obj["score"], 0.0, 1.0)
-                #print(f"Direct object-object mode: using raw score for sigma weight: {obj['score']:.3f}, weight={weight:.3f}")
+            weight = np.sqrt(np.clip(obj["score"], 0.0, 1.0))
             sigma_m = sigma_min_m + (sigma_max_m - sigma_min_m) * weight
             sigma_px = sigma_m * self.pixels_per_meter
 
+            # Crop cost scales with radius^2 (FMM runs over every cell in it), so
+            # PROPAGATION_SIGMA_CUTOFF can stop paying for cells the gaussian has
+            # already decayed to nothing. Off by default: _max_propagation_m is
+            # then the only ceiling, as upstream. Flat modes have no decay, so
+            # they always keep the full radius.
+            flat = self._fmm_no_decay or self._signal_mode == "raycast"
+            if flat or self._propagation_sigma_cutoff <= 0:
+                eff_radius_px = radius_px
+            else:
+                cutoff_px = np.ceil(self._propagation_sigma_cutoff * sigma_px)
+                eff_radius_px = int(min(radius_px, max(1.0, cutoff_px)))
+
             if self._signal_mode == "fmm":
                 crop = self._compute_fmm_crop(
-                    row, col, obj["score"], sigma_px, radius_px, free_mask
+                    row, col, obj["score"], sigma_px, eff_radius_px, free_mask
                 )
             elif self._signal_mode == "raycast":
                 crop = self._compute_raycast_crop(
-                    row, col, obj["score"], radius_px, free_mask
+                    row, col, obj["score"], eff_radius_px, free_mask
                 )
             else:
                 crop = self._compute_gaussian_crop(
-                    row, col, obj["score"], sigma_px, radius_px
+                    row, col, obj["score"], sigma_px, eff_radius_px
                 )
 
             obj["signal_cache"] = crop
@@ -647,6 +697,54 @@ class ValueMap(BaseMap):
         # following the field using gradients
         for c in range(self._value_channels):
             self._value_map[..., c] *= free_mask
+        self._drop_small_blobs()
+
+    def _drop_small_blobs(self) -> None:
+        """Discard signal islands too small to be real.
+
+        Masking by free space can cut a blob in two: when a wall is discovered
+        where signal had already been propagated, everything beyond that wall is
+        left stranded with no path back to the object that produced it. Small
+        strays also come from ray/flood-fill quantisation at the propagation
+        boundary. Either way an island of a few cells carries no usable
+        information but still scores a frontier that happens to sit on it.
+
+        Only 8-connected components smaller than ``MIN_BLOB_AREA_M2`` are
+        removed, so a genuine narrow sliver seen through a doorway survives.
+
+        Embodied-RPV-NOTE: added for TurtleBot4 deployment. This post-process has
+        no upstream equivalent, so it is DISABLED by default
+        (``MIN_BLOB_AREA_M2=0``); the TurtleBot4 launcher sets 0.1. Note this is a cleanup, not a
+        fix for the underlying staleness -- a LARGE stranded region is left
+        alone by design (see ``_mark_dirty_objects``, which only reacts to cells
+        becoming free, never to cells becoming occupied).
+        """
+        min_area_m2 = float(os.environ.get("MIN_BLOB_AREA_M2", 0.0))
+        if min_area_m2 <= 0:
+            return
+        min_area_px = max(1, int(round(min_area_m2 * self.pixels_per_meter**2)))
+
+        occupied = (self._value_map[..., 0] > 0).astype(np.uint8)
+        if not occupied.any():
+            return
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(occupied, connectivity=8)
+        if n_labels <= 1:
+            return  # background only
+
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        small = np.where(areas < min_area_px)[0] + 1  # +1: skip the background label
+        if small.size == 0:
+            return
+
+        self._value_map[np.isin(labels, small)] = 0.0
+        # Strays reappear at the propagation boundary on most steps, so only log
+        # when the count changes -- otherwise this floods an episode's log.
+        if small.size != self._last_blob_drop_count:
+            dbg(
+                f"[blob-gate] dropped {small.size} island(s) < {min_area_m2:.2f} m^2 "
+                f"({int(areas[small - 1].sum())} px total)"
+            )
+            self._last_blob_drop_count = small.size
 
 
     def _mark_dirty_objects(self, new_free_mask: np.ndarray) -> None:
@@ -732,7 +830,12 @@ class ValueMap(BaseMap):
                 json.dump(data, f)
 
     def sort_waypoints(
-        self, waypoints: np.ndarray, radius: float, reduce_fn: Optional[Callable] = None
+        self,
+        waypoints: np.ndarray,
+        radius: float,
+        reduce_fn: Optional[Callable] = None,
+        reduction: str = "median",
+        clamp_negative: bool = False,
     ) -> Tuple[np.ndarray, List[float]]:
         """Selects the best waypoint from the given list of waypoints.
 
@@ -741,6 +844,20 @@ class ValueMap(BaseMap):
             radius (float): The radius in meters to use for selecting the best waypoint.
             reduce_fn (Callable, optional): The function to use for reducing the values
                 within the given radius. Defaults to np.max.
+            reduction (str): How ``pixel_value_within_radius`` collapses the disc of
+                pixels around a waypoint. ``"median"`` is the upstream default and
+                what the published numbers used. ``"max"`` reports the strongest
+                signal that reaches the waypoint instead -- sparse point-signal
+                maps median to ~0 because most cells in the disc carry no signal.
+                Embodied-RPV-NOTE: the TurtleBot4 policy selects ``"max"``.
+            clamp_negative (bool): Treat the ``-1`` "no signal in the disc"
+                sentinel as ``0.0``. Off by default (upstream behaviour).
+                Embodied-RPV-NOTE: the TurtleBot4 policy turns this ON -- with
+                sparse signals the sentinel makes every waypoint tie at -1, so
+                ``np.argsort`` degenerates to contour-detection order and the
+                "value is not much worse than last" check in ``BaseITMPolicy``
+                (``curr_value + 0.01 > self._last_value``) latches onto the first
+                frontier forever.
 
         Returns:
             Tuple[np.ndarray, List[float]]: A tuple of the sorted waypoints and
@@ -753,8 +870,19 @@ class ValueMap(BaseMap):
             px = int(-x * self.pixels_per_meter) + self._episode_pixel_origin[0]
             py = int(-y * self.pixels_per_meter) + self._episode_pixel_origin[1]
             point_px = (self._value_map.shape[0] - px, py)
+            # pixel_value_within_radius returns -1 when no cell in the disc carries
+            # signal; clamp_negative reads that as "no signal here" = 0.0 (see the
+            # docstring for why that matters on sparse maps).
+            floor = 0.0 if clamp_negative else -np.inf
             all_values = [
-                pixel_value_within_radius(self._value_map[..., c], point_px, radius_px)
+                max(
+                    floor,
+                    float(
+                        pixel_value_within_radius(
+                            self._value_map[..., c], point_px, radius_px, reduction=reduction
+                        )
+                    ),
+                )
                 for c in range(self._value_channels)
             ]
             if len(all_values) == 1:
@@ -774,6 +902,59 @@ class ValueMap(BaseMap):
 
         return sorted_frontiers, sorted_values
 
+    def peak_world_xy_within_radius(
+        self, center_world_xy: np.ndarray, radius_m: float
+    ) -> Optional[np.ndarray]:
+        """Episodic-world (x, y) of the highest-value cell within ``radius_m``.
+
+        Returns ``None`` when there is no positive signal in that neighbourhood
+        (e.g. early exploration before any detection). Used to aim a narrow-FOV
+        camera at the most promising region near a goal instead of straight at
+        the goal point, so off-axis targets are not missed.
+        """
+        reduced = np.max(self._value_map, axis=-1)
+        center_row, center_col = self._world_to_map_pixel(
+            np.asarray(center_world_xy, dtype=float)
+        )
+        radius_px = max(1, int(radius_m * self.pixels_per_meter))
+
+        r0 = max(0, center_row - radius_px)
+        r1 = min(self.size, center_row + radius_px + 1)
+        c0 = max(0, center_col - radius_px)
+        c1 = min(self.size, center_col + radius_px + 1)
+        if r0 >= r1 or c0 >= c1:
+            return None
+
+        rows = np.arange(r0, r1)[:, None]
+        cols = np.arange(c0, c1)[None, :]
+        dist_sq = (rows - center_row) ** 2 + (cols - center_col) ** 2
+        masked = np.where(dist_sq <= radius_px**2, reduced[r0:r1, c0:c1], 0.0)
+
+        if masked.max() <= 0:
+            return None
+
+        local_row, local_col = np.unravel_index(int(np.argmax(masked)), masked.shape)
+        peak_row = r0 + int(local_row)
+        peak_col = c0 + int(local_col)
+
+        # Inverse of _world_to_map_pixel.
+        px = self.size - 1 - peak_row
+        x = -(px - self._episode_pixel_origin[0]) / self.pixels_per_meter
+        y = -(peak_col - self._episode_pixel_origin[1]) / self.pixels_per_meter
+        return np.array([x, y], dtype=float)
+
+    def _world_to_vis_rc(self, pt: np.ndarray) -> Tuple[float, float]:
+        """World (x, y) in metres -> (row, col) in *flipped* full-canvas pixels.
+
+        Float-precision equivalent of ``TrajectoryVisualizer._metric_to_pixel``
+        (which rounds to int32). Sub-pixel precision matters here because these
+        coordinates are subsequently multiplied by the output scale factor,
+        which magnifies any rounding done at canvas resolution.
+        """
+        row = float(self._episode_pixel_origin[0]) - float(pt[0]) * self.pixels_per_meter
+        col = float(self._episode_pixel_origin[1]) - float(pt[1]) * self.pixels_per_meter
+        return row, col
+
     def visualize(
         self,
         markers: Optional[List[Tuple[np.ndarray, Dict[str, Any]]]] = None,
@@ -784,66 +965,178 @@ class ValueMap(BaseMap):
 
         Occupied / unexplored cells are drawn in dark grey so that it is
         visually obvious the signal does not permeate through obstacles.
+
+        Rendering runs in three stages, in this order for specific reasons:
+
+        1. Crop the *scalar* field (not the RGB) to the explored bounding box.
+        2. Resample it to a FIXED output canvas (``VALUE_MAP_OUTPUT_PX``). The
+           scalar field is resampled bilinearly and the occupancy mask with
+           NEAREST, then colour-mapped and composited -- interpolating the RGB
+           instead would blend dark-grey walls into the inferno ramp and produce
+           colours that correspond to no value at all.
+        3. Draw every overlay (trajectory, agent, frontier rings, object dots)
+           in output-pixel space, sized as a FRACTION of the output canvas.
+
+        Because the canvas is fixed, a marker occupying a constant fraction of
+        the frame corresponds to a world-space radius that grows linearly with
+        the explored extent: markers stay the same size on screen no matter how
+        far the auto-crop has zoomed out.
         """
         reduced_map = reduce_fn(self._value_map).copy()
 
         # Build a mask of cells that are not free navigable space
         # (obstacles + unexplored).  These will be rendered distinctly.
+        crop_src = self._obstacle_map if obstacle_map is None else obstacle_map
         occupied_mask_raw: Optional[np.ndarray] = None
-        if obstacle_map is not None:
-            free = obstacle_map.explored_area & ~obstacle_map._map
+        if crop_src is not None:
+            free = crop_src.explored_area & ~crop_src._map
             occupied_mask_raw = ~free  # True where obstacle OR unexplored
             reduced_map[occupied_mask_raw] = 0
-        elif self._obstacle_map is not None:
-            free = self._obstacle_map.explored_area & ~self._obstacle_map._map
-            occupied_mask_raw = ~free
-            reduced_map[occupied_mask_raw] = 0
 
-        map_img = np.flipud(reduced_map)
-        occupied_mask_vis = np.flipud(occupied_mask_raw) if occupied_mask_raw is not None else None
+        val = np.flipud(reduced_map).astype(np.float32)
+        occ = (
+            np.flipud(occupied_mask_raw)
+            if occupied_mask_raw is not None
+            else np.zeros(val.shape, dtype=bool)
+        )
 
-        # Colour-map the non-zero signal values
-        zero_mask = map_img == 0
-        max_val = np.max(map_img)
-        if max_val > 0:
-            map_img[zero_mask] = max_val  # temp: avoid skewing colourmap
-        map_img = monochannel_to_inferno_rgb(map_img)
-        # White for zero-signal free space
-        map_img[zero_mask] = (255, 255, 255)
-        # Dark grey for occupied / unexplored — makes wall-blocking visible
-        if occupied_mask_vis is not None:
-            map_img[occupied_mask_vis] = (60, 60, 60)
-
-        # Draw trajectory
-        if len(self._camera_positions) > 0:
-            self._traj_vis.draw_trajectory(
-                map_img,
-                self._camera_positions,
-                self._last_camera_yaw,
-            )
-
-            # Frontier / goal markers (circles)
-            if markers is not None:
-                for pos, marker_kwargs in markers:
-                    map_img = self._traj_vis.draw_circle(map_img, pos, **marker_kwargs)
-
-        # Auto-crop to explored region so the signal isn't a tiny dot in a
-        # sea of dark grey.  Uses the obstacle map's explored_area to find
-        # the bounding box and adds padding.
-        crop_src = self._obstacle_map if obstacle_map is None else obstacle_map
+        # ---- 1. crop the scalar field to the explored region --------------
+        # Without this the signal is a tiny speck in a sea of grey. r0/c0 are the
+        # crop origin and are needed below to map world coords into the crop.
+        H, W = val.shape[:2]
+        r0, c0, r1, c1 = 0, 0, H, W
         if crop_src is not None:
             explored = np.flipud(crop_src.explored_area)  # match the flipped vis
             rows_any = np.any(explored, axis=1)
             cols_any = np.any(explored, axis=0)
             if rows_any.any() and cols_any.any():
-                r_indices = np.where(rows_any)[0]
-                c_indices = np.where(cols_any)[0]
-                pad = 40  # pixels of padding around explored area
-                r0 = max(0, r_indices[0] - pad)
-                r1 = min(map_img.shape[0], r_indices[-1] + pad + 1)
-                c0 = max(0, c_indices[0] - pad)
-                c1 = min(map_img.shape[1], c_indices[-1] + pad + 1)
-                map_img = map_img[r0:r1, c0:c1]
+                r_idx = np.where(rows_any)[0]
+                c_idx = np.where(cols_any)[0]
+                # Padding around the explored area, in METRES so the framing is
+                # the same at any map resolution.
+                pad = int(round(float(os.environ.get("VALUE_MAP_CROP_PAD_M", 0.8)) * self.pixels_per_meter))
+                r0, r1 = max(0, r_idx[0] - pad), min(H, r_idx[-1] + pad + 1)
+                c0, c1 = max(0, c_idx[0] - pad), min(W, c_idx[-1] + pad + 1)
+
+                # Floor the crop at a minimum extent: on the first few steps the
+                # explored area is a couple of metres across, and blowing that up
+                # to the full canvas makes the early frames unreadably zoomed in
+                # (and the framing lurch wildly between steps).
+                min_px = int(round(float(os.environ.get("VALUE_MAP_MIN_EXTENT_M", 6.0)) * self.pixels_per_meter))
+                # Square the crop so the aspect ratio is 1:1, then apply the
+                # minimum. Both grow symmetrically about the crop centre.
+                side = max(r1 - r0, c1 - c0, min_px)
+                rc, cc = (r0 + r1) / 2.0, (c0 + c1) / 2.0
+                r0 = int(round(rc - side / 2.0))
+                c0 = int(round(cc - side / 2.0))
+                r1, c1 = r0 + side, c0 + side
+
+        # Slice with clamping, then pad back out so the crop is exactly
+        # `side` x `side` even when it runs off the canvas edge. Padding rather
+        # than clamping keeps the aspect ratio at 1:1, so the resize below never
+        # stretches the map.
+        sr0, sc0 = max(0, r0), max(0, c0)
+        sr1, sc1 = min(H, r1), min(W, c1)
+        val = val[sr0:sr1, sc0:sc1]
+        occ = occ[sr0:sr1, sc0:sc1]
+        pad_top, pad_left = sr0 - r0, sc0 - c0
+        pad_bot, pad_right = r1 - sr1, c1 - sc1
+        if any(p > 0 for p in (pad_top, pad_left, pad_bot, pad_right)):
+            pad_spec = ((pad_top, pad_bot), (pad_left, pad_right))
+            val = np.pad(val, pad_spec, constant_values=0.0)
+            occ = np.pad(occ, pad_spec, constant_values=True)  # off-canvas = unknown
+
+        # ---- 2. resample to a fixed output canvas -------------------------
+        out_px = max(64, int(os.environ.get("VALUE_MAP_OUTPUT_PX", 1024)))
+        src_px = max(1, val.shape[0])
+        scale = out_px / float(src_px)
+        # Bilinear when magnifying the (already continuous) propagated field;
+        # NEAREST when minifying, and always for the mask, so wall edges stay
+        # crisp and no cell is invented between two real ones.
+        smooth = os.environ.get("VALUE_MAP_SMOOTH", "1").lower() in ("1", "true", "yes")
+        val_interp = cv2.INTER_LINEAR if (smooth and scale > 1.0) else cv2.INTER_AREA if scale < 1.0 else cv2.INTER_NEAREST
+        val = cv2.resize(val, (out_px, out_px), interpolation=val_interp)
+        occ = cv2.resize(occ.astype(np.uint8), (out_px, out_px), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+        # ---- colour-map ---------------------------------------------------
+        zero_mask = val <= 0.0
+        if os.environ.get("VALUE_MAP_FIXED_SCALE", "0").lower() in ("1", "true", "yes"):
+            # Absolute [0, 1] ramp: a given colour means the same score in every
+            # frame and every run, at the cost of contrast when scores are low.
+            map_img = monochannel_to_inferno_rgb(np.clip(val, 0.0, 1.0))
+        else:
+            # Per-frame auto-stretch (historical behaviour): maximum contrast,
+            # but colours are NOT comparable across frames or runs.
+            max_val = float(np.max(val))
+            if max_val > 0:
+                val = np.where(zero_mask, max_val, val)  # temp: avoid skewing colourmap
+            map_img = monochannel_to_inferno_rgb(val)
+        # White for zero-signal free space
+        map_img[zero_mask] = (255, 255, 255)
+        # Dark grey for occupied / unexplored — makes wall-blocking visible
+        map_img[occ] = (60, 60, 60)
+
+        # ---- 3. overlays, in output-pixel space ---------------------------
+        def to_out(pt: np.ndarray) -> Tuple[int, int]:
+            """World (x, y) metres -> (x, y) pixel in the output canvas."""
+            row, col = self._world_to_vis_rc(pt)
+            return int(round((col - c0) * scale)), int(round((row - r0) * scale))
+
+        def frac_px(frac: float, min_px: int = 1) -> int:
+            return max(min_px, int(round(frac * out_px)))
+
+        # Sizes as a fraction of the output canvas -> constant on-screen size.
+        path_th = frac_px(float(os.environ.get("VALUE_MAP_PATH_FRAC", 0.004)), 2)
+        agent_r = frac_px(float(os.environ.get("VALUE_MAP_AGENT_FRAC", 0.012)), 3)
+        marker_r = frac_px(float(os.environ.get("VALUE_MAP_MARKER_FRAC", 0.016)), 4)
+        marker_th = max(2, marker_r // 4)
+        dot_r = frac_px(float(os.environ.get("VALUE_MAP_DOT_FRAC", 0.009)), 3)
+        # The selected frontier gets a bigger ring plus a crosshair; colour alone
+        # is not legible once the ring is only a few pixels across.
+        sel_r = int(round(marker_r * 1.9))
+
+        if len(self._camera_positions) > 0:
+            # Trajectory. Drawn fresh each frame in output space rather than
+            # through TrajectoryVisualizer's incremental mask cache -- that cache
+            # is keyed to canvas resolution and would be invalidated every time
+            # the crop changes. A few hundred polyline points is negligible.
+            if len(self._camera_positions) > 1:
+                pts = np.array([to_out(p) for p in self._camera_positions], dtype=np.int32)
+                cv2.polylines(map_img, [pts], False, self._traj_vis.path_color, path_th, cv2.LINE_AA)
+
+            # Agent: filled circle + heading tick.
+            ax, ay = to_out(self._camera_positions[-1])
+            cv2.circle(map_img, (ax, ay), agent_r, (255, 192, 15), -1, cv2.LINE_AA)
+            head_len = agent_r * 2.5
+            hx = int(round(ax - head_len * np.sin(self._last_camera_yaw)))
+            hy = int(round(ay - head_len * np.cos(self._last_camera_yaw)))
+            cv2.line(map_img, (ax, ay), (hx, hy), (0, 0, 0), max(2, agent_r // 2), cv2.LINE_AA)
+
+        # Frontier / goal markers. `radius` / `thickness` in marker_kwargs are
+        # ignored (they were metric sizes for the old native-resolution draw);
+        # a truthy "selected" key promotes a marker to the emphasised style.
+        if markers is not None:
+            for pos, marker_kwargs in markers:
+                color = marker_kwargs.get("color", (0, 0, 255))
+                selected = bool(marker_kwargs.get("selected", False))
+                mx, my = to_out(np.asarray(pos, dtype=float))
+                if selected:
+                    cv2.circle(map_img, (mx, my), sel_r, (255, 255, 255), marker_th + 2, cv2.LINE_AA)
+                    cv2.circle(map_img, (mx, my), sel_r, color, marker_th, cv2.LINE_AA)
+                    cv2.line(map_img, (mx - sel_r, my), (mx + sel_r, my), color, marker_th, cv2.LINE_AA)
+                    cv2.line(map_img, (mx, my - sel_r), (mx, my + sel_r), color, marker_th, cv2.LINE_AA)
+                else:
+                    cv2.circle(map_img, (mx, my), marker_r, color, marker_th, cv2.LINE_AA)
+
+        # Pin a dot on each detected object where it was seen on the map.
+        for obj in self._tracked_objects:
+            wxy = obj.get("world_xy")
+            if wxy is None:
+                continue
+            ox, oy = to_out(np.asarray(wxy, dtype=float))
+            if 0 <= ox < out_px and 0 <= oy < out_px:
+                cv2.circle(map_img, (ox, oy), dot_r, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(map_img, (ox, oy), dot_r, (0, 0, 255), max(1, dot_r // 3), cv2.LINE_AA)
 
         return map_img
 

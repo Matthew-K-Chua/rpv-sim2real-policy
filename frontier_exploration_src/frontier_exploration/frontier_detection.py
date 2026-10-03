@@ -22,12 +22,15 @@ def detect_frontier_waypoints(
         import time
 
         os.makedirs("map_debug", exist_ok=True)
+        # full_map / explored_mask are 0/1 uint8 masks; scale to 0/255 so the
+        # written PNGs are actually visible (otherwise every pixel is ~black).
         cv2.imwrite(
-            f"map_debug/{int(time.time())}_debug_full_map_{area_thresh}.png", full_map
+            f"map_debug/{int(time.time())}_debug_full_map_{area_thresh}.png",
+            (full_map > 0).astype(np.uint8) * 255,
         )
         cv2.imwrite(
             f"map_debug/{int(time.time())}_debug_explored_mask_{area_thresh}.png",
-            explored_mask,
+            (explored_mask > 0).astype(np.uint8) * 255,
         )
 
     if VISUALIZE:

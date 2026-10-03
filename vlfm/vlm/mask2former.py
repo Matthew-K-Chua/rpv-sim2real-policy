@@ -6,7 +6,6 @@ from typing import List, Optional
 import numpy as np
 import cv2
 
-from .mask2former_predictor import Mask2FormerPredictor
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image, image_to_str
 
 
@@ -30,6 +29,11 @@ class Mask2Former:
             except ValueError:
                 pass
 
+        # Imported lazily so that the lightweight Mask2FormerClient (and anything
+        # that only needs it) can be imported without the MultiScaleDeformableAttention
+        # CUDA op being compiled/available. Only the server actually needs the predictor.
+        from .mask2former_predictor import Mask2FormerPredictor
+
         self.mask_type = mask_type
         self.predictor = Mask2FormerPredictor(
             version=version,
@@ -44,7 +48,6 @@ class Mask2Former:
         """Run Mask2Former and mask out stuff pixels using the configured fill mode."""
         # # Save the image passed to this function to see if it is RGB or BGR (for debugging purposes)
         # # We want the image going into Mask2Former to be RGB
-        # path_to_save = f"/home/student/scicluna-rpv/RPV-SemNav/running-outputs/mask2former_input_images_bgr/step_{self._num_steps}.jpg"
         # os.makedirs(os.path.dirname(path_to_save), exist_ok=True)
         # cv2.imwrite(path_to_save, image)
         # print(f"img channel means (0,1,2): {image[:,:,0].mean():.1f}, {image[:,:,1].mean():.1f}, {image[:,:,2].mean():.1f}")

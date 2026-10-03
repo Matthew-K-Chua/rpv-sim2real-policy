@@ -1,0 +1,29 @@
+# SAM3 prompt list for the Spot RPV experiment.
+#
+# Selected with SKIP_YOLOE_CLASSES (scripts/launch_offboard_ai.sh defaults to
+# this file). With SKIP_YOLOE=1 these labels are prompted to SAM3 directly on
+# every step, together with the target, and everything detected from them feeds
+# the RPV value map.
+#
+# The policy reads this file ONCE, at the first step of a run, and caches it --
+# restart the policy after editing.
+#
+# Managed by the Spot console's "Edit SAM3 list" dialog; hand edits are fine and
+# are preserved as long as the `names:` mapping stays consecutive from 0.
+
+# Last written by the Spot console on 2026-09-19.
+names:
+  0: mobile whiteboard
+  1: computer monitor
+  2: lockers
+  3: sink
+  4: mug
+  5: faucet / tap
+  6: printer
+  7: book
+  8: toilet sign
+  9: elevator
+  10: microwave
+  11: office chair
+  12: garbage
+  13: printer

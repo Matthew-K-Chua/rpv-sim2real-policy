@@ -11,8 +11,6 @@ from torch import Tensor
 
 # For patching policy config dicts from old flat format to new 0.3.X nested Dict[str, PolicyConfig] format
 from omegaconf import OmegaConf
-from habitat.config import read_write
-from omegaconf import open_dict
 
 habitat_version = ""
 
